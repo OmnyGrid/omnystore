@@ -277,6 +277,22 @@ omnystore download --package omnyagent \
   --platform macos-x64,macos-arm64 -o dist/
 ```
 
+`--kind` narrows by what an artifact *is* rather than what it targets, and the
+two compose:
+
+```sh
+omnystore download --package omnyagent --kind installer          # this machine
+omnystore download --package omnyagent --platform all \
+  --kind installer,archive -o dist/                              # builds only
+omnystore download --package omnyagent --platform all \
+  --kind checksums -o dist/                                      # digests only
+```
+
+Without `--kind`, a single-artifact download never picks a checksum file or a
+signature, and prefers an `installer` over an `archive` — the same rule the
+update service applies. `--platform all` keeps the auxiliary files, since a
+mirror wants the digests too.
+
 ## Migrating an existing registry
 
 Publishing historical releases keeps their real timestamps out of the way — the

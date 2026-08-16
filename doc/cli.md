@@ -183,7 +183,17 @@ The version's pre-release tag decides the channel: `1.2.0-dev.3` is dev,
 `--notes @path` reads a file — release notes are usually a changelog, and shells
 make multi-line arguments awkward.
 
-`--asset path:platform` attaches a file and tags its platform in one flag.
+`--asset path:platform:kind` attaches a file and tags it in one flag; both tags
+are optional, so `path`, `path:platform` and `path:platform:kind` are all
+valid. A Windows path keeps working — `C:\build\agent.exe` is not mistaken for
+a tag, because a drive letter's tail contains a path separator.
+
+```sh
+--asset build/agent.dmg:macos-arm64:installer
+--asset build/agent.tar.gz:macos-arm64:archive
+--asset build/agent.tar.gz.sha256:macos-arm64      # kind inferred from .sha256
+```
+
 `--draft` stores the release without offering it to anyone.
 
 ```sh
@@ -228,8 +238,9 @@ Uploads compute the file's checksum locally and require the server to agree
 of publishing bad bytes.
 
 `--kind` marks what an artifact *is*: `installer`, `archive`, `checksums`,
-`signature`. The update service never offers a checksum or signature file as
-*the* download.
+`signature`, `sbom`. The update service never offers a checksum or signature
+file as *the* download, and `omnystore download --kind` filters on the same
+vocabulary.
 
 ## `omnystore download`
 
@@ -239,6 +250,8 @@ omnystore download --package omnyagent --platform linux-x64 -o /opt
 omnystore download --package omnyagent \
   --platform linux-x64,macos-arm64 -o dist/                 # a list
 omnystore download --package omnyagent --platform all -o dist/
+omnystore download --package omnyagent --kind installer                 # a kind
+omnystore download --package omnyagent --platform all --kind checksums -o dist/
 omnystore download --package omnyagent --version 1.2.0 --asset agent.tar.gz
 omnystore download --package omnyagent --channel beta
 ```
@@ -261,6 +274,31 @@ Aliases other toolchains use are understood, so `--platform darwin-x86_64` and
 
 `all` and `any` select on their own; combining either with a specific platform
 is a usage error rather than a silently ignored flag.
+
+`--kind` narrows the same way, and composes with `--platform`:
+
+| `--kind …`             | Selects                                            |
+| ---------------------- | -------------------------------------------------- |
+| *(omitted)*            | whatever is installable — never a checksum file or a signature |
+| `installer`            | only installers                                     |
+| `installer,archive`    | either — repeatable, or comma-separated             |
+| `all`                  | no kind filtering at all                            |
+
+With several artifacts for one platform and no `--kind`, an `installer` wins
+over an `archive`, which wins over an untagged artifact — the same order the
+update service uses, so `download` and `check-update` cannot disagree about
+which artifact *is* the release.
+
+A kind is read from the publisher's tag when there is one, and otherwise
+inferred from the filename for the auxiliary kinds only: `.sha256`, `.sha512`,
+`.md5`, `checksums.txt` and `sha256sums.txt` are `checksums`; `.sig` and `.asc`
+are `signature`; `.sbom.json` is `sbom`. An untagged `.dmg` stays untagged —
+guessing `installer` from an extension would change which artifact clients are
+offered.
+
+`--platform all` deliberately keeps the auxiliary artifacts, because a mirror
+or a GitHub-release step wants the digests too. Narrow it with `--kind` when
+you don't: `--platform all --kind installer,archive`.
 
 With more than one artifact selected, `-o` names a **directory**, created if it
 does not exist, and each artifact keeps its own filename. Two platforms that

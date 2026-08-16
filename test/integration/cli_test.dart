@@ -788,6 +788,243 @@ void main() {
     });
   });
 
+  group('download by kind', () {
+    setUp(() async {
+      await cli(['org', 'create', 'acme']);
+      final project = await cliJson([
+        'project',
+        'create',
+        'agent',
+        '--org',
+        'acme',
+      ]);
+      await cli([
+        'package',
+        'create',
+        'omnyagent',
+        '--project',
+        project['id'] as String,
+      ]);
+
+      // One platform carrying an installer, an archive, and the checksum file
+      // that accompanies them.
+      File(
+        p.join(dataDir.path, 'omnyagent.dmg'),
+      ).writeAsStringSync('installer');
+      File(
+        p.join(dataDir.path, 'omnyagent.tar.gz'),
+      ).writeAsStringSync('archive');
+      File(
+        p.join(dataDir.path, 'omnyagent.tar.gz.sha256'),
+      ).writeAsStringSync('digest');
+
+      await cli([
+        'release',
+        'publish',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.dmg')}:macos-arm64:installer',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.tar.gz')}:macos-arm64:archive',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.tar.gz.sha256')}:macos-arm64',
+      ]);
+    });
+
+    /// The filenames in [directory], for comparing a selection.
+    Set<String> filesIn(Directory directory) => directory
+        .listSync()
+        .whereType<File>()
+        .map((f) => p.basename(f.path))
+        .toSet();
+
+    test('publishes the kind given in the asset spec', () async {
+      final assets = await cliJson([
+        'asset',
+        'list',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+      ]);
+
+      expect(
+        {for (final a in assets) a['name']: a['kind']},
+        {
+          'omnyagent.dmg': 'installer',
+          'omnyagent.tar.gz': 'archive',
+          // Untagged, and inferred as auxiliary from its suffix.
+          'omnyagent.tar.gz.sha256': null,
+        },
+      );
+    });
+
+    test('--kind installer takes only the installer', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'installer',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.dmg'});
+    });
+
+    test('--kind archive takes only the archive', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'archive',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.tar.gz'});
+    });
+
+    test('prefers the installer when no kind is given', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      // The same order the update service uses, so `download` and
+      // `check-update` cannot disagree about which artifact *is* the release.
+      expect(filesIn(out), {'omnyagent.dmg'});
+    });
+
+    test('never picks a checksum file as the build itself', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'macos-arm64',
+        '-o',
+        out.path,
+      ]);
+
+      expect(filesIn(out), isNot(contains('omnyagent.tar.gz.sha256')));
+    });
+
+    test('--kind checksums fetches the accompanying file on request', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      // Untagged on publish; recognised by its suffix.
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'checksums',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.tar.gz.sha256'});
+    });
+
+    test('takes a list of kinds', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'all',
+          '--kind',
+          'installer,archive',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.dmg', 'omnyagent.tar.gz'});
+    });
+
+    test('--platform all keeps the checksum files in the bundle', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'all',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      // A mirror wants the digests too; "all" means all.
+      expect(filesIn(out), {
+        'omnyagent.dmg',
+        'omnyagent.tar.gz',
+        'omnyagent.tar.gz.sha256',
+      });
+    });
+
+    test('reports a kind with no artifact, listing what is present', () async {
+      final code = await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--kind',
+        'sbom',
+        '-o',
+        dataDir.path,
+      ]);
+
+      expect(code, 1);
+      expect(err.toString(), contains('no artifact of kind sbom'));
+      expect(err.toString(), contains('installer'));
+    });
+  });
+
   group('check-update defaults to this machine', () {
     test('offers only a build this platform can install', () async {
       await cli(['org', 'create', 'acme']);

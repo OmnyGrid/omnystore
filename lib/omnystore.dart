@@ -57,6 +57,7 @@ export 'src/channels/release_channel.dart';
 
 // Models.
 export 'src/models/asset.dart';
+export 'src/models/asset_kinds.dart';
 export 'src/models/asset_location.dart';
 export 'src/models/download_record.dart';
 export 'src/models/organization.dart';
