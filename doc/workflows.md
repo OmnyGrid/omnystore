@@ -259,6 +259,24 @@ systemctl start omnyagent
 The download is checksum-verified before it lands, so the `tar` step never sees
 bytes the registry did not vouch for.
 
+### Pulling a whole release
+
+An updater wants one artifact; a mirror, a signing step or a GitHub-release
+publisher wants all of them. `--platform all` fetches every artifact in the
+release into a directory, each verified against its own digest:
+
+```sh
+omnystore download --package omnyagent --version 1.4.0 --platform all -o dist/
+gh release create v1.4.0 dist/*
+```
+
+A subset works the same way — repeat the flag, or comma-separate it:
+
+```sh
+omnystore download --package omnyagent \
+  --platform macos-x64,macos-arm64 -o dist/
+```
+
 ## Migrating an existing registry
 
 Publishing historical releases keeps their real timestamps out of the way — the

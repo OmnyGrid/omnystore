@@ -236,6 +236,9 @@ of publishing bad bytes.
 ```sh
 omnystore download --package omnyagent -o /opt              # this machine
 omnystore download --package omnyagent --platform linux-x64 -o /opt
+omnystore download --package omnyagent \
+  --platform linux-x64,macos-arm64 -o dist/                 # a list
+omnystore download --package omnyagent --platform all -o dist/
 omnystore download --package omnyagent --version 1.2.0 --asset agent.tar.gz
 omnystore download --package omnyagent --channel beta
 ```
@@ -248,12 +251,29 @@ build for the wrong architecture.
 Aliases other toolchains use are understood, so `--platform darwin-x86_64` and
 `--platform macos-x64` select the same artifact.
 
-Pass `--platform any` to ignore platform and choose by name instead; with
-several artifacts and no way to choose, the command lists them and exits `64`
-rather than guessing.
+| `--platform …`              | Selects                                     |
+| --------------------------- | ------------------------------------------- |
+| *(omitted)*                 | the artifact for this machine               |
+| `linux-x64`                 | the artifact for that platform              |
+| `linux-x64,macos-arm64`     | one artifact per platform — repeatable, or comma-separated |
+| `all`                       | every artifact in the release               |
+| `any`                       | ignore platform tags and choose by name     |
 
-Resolves the release, picks the artifact, streams it with a progress bar,
-resumes an interrupted transfer, and verifies the checksum. An
+`all` and `any` select on their own; combining either with a specific platform
+is a usage error rather than a silently ignored flag.
+
+With more than one artifact selected, `-o` names a **directory**, created if it
+does not exist, and each artifact keeps its own filename. Two platforms that
+resolve to the same artifact — `macos-x64` and `darwin-x86_64`, say — download
+it once.
+
+Every platform is resolved before the first byte is fetched, so a typo in the
+third of four platforms fails immediately instead of leaving a partial bundle
+on disk. `--platform any` with several artifacts and no way to choose lists
+them and exits `64` rather than guessing.
+
+Resolves the release, picks the artifacts, streams each with a progress bar,
+resumes an interrupted transfer, and verifies every checksum. An
 already-downloaded, verified file transfers nothing.
 
 Against a `--data` registry the bytes are already on this machine, so the

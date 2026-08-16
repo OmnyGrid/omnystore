@@ -607,7 +607,8 @@ class DownloadCommand extends StoreCommand {
 
   @override
   String get invocation =>
-      'omnystore download --package <pkg> [--version 1.2.0] [--platform linux-x64]';
+      'omnystore download --package <pkg> [--version 1.2.0] '
+      '[--platform linux-x64]';
 
   /// Creates the command.
   DownloadCommand(super.context) {
@@ -623,17 +624,21 @@ class DownloadCommand extends StoreCommand {
         help: 'Channel to take the latest from.',
         allowed: ['dev', 'beta', 'release'],
       )
-      ..addOption(
+      ..addMultiOption(
         'platform',
         help:
-            'Platform to pick an artifact for. Defaults to this machine '
-            '(${Platforms.current}); pass "any" to choose from every artifact.',
+            'Platforms to download for; repeatable and comma-separated. '
+            'Defaults to this machine (${Platforms.current}). Pass "all" for '
+            "every artifact in the release, or \"any\" to ignore the release's "
+            'platform tags and select by name instead.',
       )
       ..addOption('asset', abbr: 'a', help: 'Asset id or name to fetch.')
       ..addOption(
         'output',
         abbr: 'o',
-        help: 'Destination file or directory.',
+        help:
+            'Destination file, or directory when more than one artifact is '
+            'selected.',
         defaultsTo: '.',
       );
   }
@@ -641,12 +646,37 @@ class DownloadCommand extends StoreCommand {
   @override
   Future<int> run() async {
     final ctx = await context;
-    final asset = await _resolveAsset(ctx);
+    final assets = await _resolveAssets(ctx);
+    final output = optional('output') ?? '.';
 
-    final destination = await Directory(optional('output') ?? '.').exists()
-        ? p.join(optional('output') ?? '.', asset.name)
-        : (optional('output') ?? asset.name);
+    // More than one artifact has no single filename to be written to, so the
+    // output names a directory — created if it does not exist, because
+    // `--platform all -o dist/` is the natural way to spell a release bundle.
+    final intoDirectory = assets.length > 1 || await Directory(output).exists();
+    if (assets.length > 1) await Directory(output).create(recursive: true);
 
+    final manager = DownloadManager();
+    try {
+      for (final asset in assets) {
+        final destination = intoDirectory ? p.join(output, asset.name) : output;
+        final code = await _fetchOne(ctx, manager, asset, destination);
+        // Stops at the first failure rather than continuing: a partial bundle
+        // that reports success would be worse than an obvious stop.
+        if (code != 0) return code;
+      }
+    } finally {
+      manager.close();
+    }
+    return 0;
+  }
+
+  /// Downloads one [asset] to [destination] and verifies it.
+  Future<int> _fetchOne(
+    CliContext ctx,
+    DownloadManager manager,
+    Asset asset,
+    String destination,
+  ) async {
     // A local registry has no URL to fetch from, but the bytes are right
     // there: copy them out and verify, rather than turning a reasonable
     // command into a dead end.
@@ -655,41 +685,36 @@ class DownloadCommand extends StoreCommand {
     }
 
     final target = await ctx.store.downloadTarget(asset.id);
-    final manager = DownloadManager();
-    try {
-      final url = switch (target) {
-        RedirectDownload(:final url) => url,
-        // A store that cannot issue a URL is reached through its own download
-        // endpoint, which every deployment exposes.
-        StreamedDownload() => _serverDownloadUrl(ctx, asset.id),
-      };
+    final url = switch (target) {
+      RedirectDownload(:final url) => url,
+      // A store that cannot issue a URL is reached through its own download
+      // endpoint, which every deployment exposes.
+      StreamedDownload() => _serverDownloadUrl(ctx, asset.id),
+    };
 
-      final result = await manager.downloadToFile(
-        url: url,
-        destination: destination,
-        expectedSha256: asset.sha256.isEmpty ? null : asset.sha256,
-        expectedSize: asset.sizeBytes,
-        onProgress: ctx.quiet
-            ? null
-            : (progress) {
-                final percent = progress.percent;
-                if (percent != null) {
-                  ctx.err.write('\rDownloading ${asset.name}: $percent%');
-                }
-              },
-      );
-      if (!ctx.quiet) ctx.err.writeln();
+    final result = await manager.downloadToFile(
+      url: url,
+      destination: destination,
+      expectedSha256: asset.sha256.isEmpty ? null : asset.sha256,
+      expectedSize: asset.sizeBytes,
+      onProgress: ctx.quiet
+          ? null
+          : (progress) {
+              final percent = progress.percent;
+              if (percent != null) {
+                ctx.err.write('\rDownloading ${asset.name}: $percent%');
+              }
+            },
+    );
+    if (!ctx.quiet) ctx.err.writeln();
 
-      ctx.info(
-        result.wasCached
-            ? '${result.file!.path} is already up to date (verified).'
-            : 'Downloaded ${result.file!.path} '
-                  '(${result.sizeBytes} bytes, sha256 verified).',
-      );
-      return 0;
-    } finally {
-      manager.close();
-    }
+    ctx.info(
+      result.wasCached
+          ? '${result.file!.path} is already up to date (verified).'
+          : 'Downloaded ${result.file!.path} '
+                '(${result.sizeBytes} bytes, sha256 verified).',
+    );
+    return 0;
   }
 
   /// Streams an artifact out of an embedded registry to [destination],
@@ -732,11 +757,13 @@ class DownloadCommand extends StoreCommand {
     return 0;
   }
 
-  Future<dynamic> _resolveAsset(CliContext ctx) async {
+  /// The artifacts `--asset` and `--platform` select, in the order they were
+  /// asked for.
+  Future<List<Asset>> _resolveAssets(CliContext ctx) async {
     final assetRef = optional('asset');
     if (assetRef != null) {
       final byId = await ctx.store.asset(assetRef);
-      if (byId != null) return byId;
+      if (byId != null) return [byId];
     }
 
     final packageRef = require('package');
@@ -766,42 +793,72 @@ class DownloadCommand extends StoreCommand {
     final byName = assetRef == null
         ? null
         : assets.where((a) => a.name == assetRef).firstOrNull;
-    if (byName != null) return byName;
+    if (byName != null) return [byName];
+
+    final requested = multi('platform');
+    for (final keyword in const ['all', 'any']) {
+      if (requested.contains(keyword) && requested.length > 1) {
+        throw CliException(
+          '--platform $keyword selects on its own; it cannot be combined with '
+          "'${requested.where((t) => t != keyword).join(', ')}'.",
+          exitCode: 64,
+        );
+      }
+    }
+
+    // Every artifact, whatever it targets — the release-bundle case, where the
+    // caller is mirroring or repackaging rather than installing.
+    if (requested.contains('all')) return assets;
+
+    if (requested.contains('any')) {
+      if (assets.length > 1) {
+        throw CliException(
+          '${release.version} has ${assets.length} artifacts; choose with '
+          '--platform, --platform all, or --asset: '
+          '${assets.map((a) => a.name).join(', ')}',
+          exitCode: 64,
+        );
+      }
+      return [assets.single];
+    }
 
     // Defaults to this machine. Downloading an artifact almost always means
     // "the one I can run", and making the common case explicit every time
     // invites the mistake of fetching a build for the wrong architecture.
-    final requested = optional('platform') ?? Platforms.current;
-    if (requested != 'any') {
-      final match = assets
-          .where(
-            (a) =>
-                a.platform != null && Platforms.matches(a.platform!, requested),
-          )
-          .firstOrNull;
-      if (match != null) return match;
+    final wanted = requested.isEmpty ? [Platforms.current] : requested;
 
-      // A portable artifact is the documented fallback when no
-      // architecture-specific build matches — the same order the update
-      // service uses.
-      final portable = assets.where((a) => a.platform == null).toList();
-      if (portable.length == 1) return portable.single;
-
-      throw AssetNotFoundException(
-        '${release.version} has no artifact for $requested '
-        '(available: ${assets.map((a) => a.platform ?? 'any').join(', ')}). '
-        'Pass --platform to choose another, or --platform any to pick by name.',
-      );
+    // Deduplicated because two requested platforms can resolve to the same
+    // artifact through the portable fallback below, and downloading one file
+    // twice to the same path is at best wasted bandwidth.
+    final selected = <String, Asset>{};
+    for (final platform in wanted) {
+      final match = _assetFor(assets, platform, release.version.toString());
+      selected[match.id] = match;
     }
+    return selected.values.toList();
+  }
 
-    if (assets.length > 1) {
-      throw CliException(
-        '${release.version} has ${assets.length} artifacts; choose one with '
-        '--platform or --asset: ${assets.map((a) => a.name).join(', ')}',
-        exitCode: 64,
-      );
-    }
-    return assets.single;
+  /// The artifact a client on [platform] should take from [assets].
+  Asset _assetFor(List<Asset> assets, String platform, String version) {
+    final match = assets
+        .where(
+          (a) => a.platform != null && Platforms.matches(a.platform!, platform),
+        )
+        .firstOrNull;
+    if (match != null) return match;
+
+    // A portable artifact is the documented fallback when no
+    // architecture-specific build matches — the same order the update service
+    // uses.
+    final portable = assets.where((a) => a.platform == null).toList();
+    if (portable.length == 1) return portable.single;
+
+    throw AssetNotFoundException(
+      '$version has no artifact for $platform '
+      '(available: ${assets.map((a) => a.platform ?? 'any').join(', ')}). '
+      'Pass --platform to choose another, --platform all for every artifact, '
+      'or --platform any to pick by name.',
+    );
   }
 
   /// The server's own download endpoint for [assetId].

@@ -384,7 +384,10 @@ omnystore release publish --package omnyagent --version 1.4.0 \
   --asset build/omnyagent-macos-arm64.tar.gz:macos-arm64
 
 omnystore release latest --package omnyagent --channel beta
+
+omnystore download --package omnyagent -o /opt                  # this machine
 omnystore download --package omnyagent --platform linux-x64 -o /opt
+omnystore download --package omnyagent --platform all -o dist/  # every build
 ```
 
 See [doc/cli.md](doc/cli.md) for the full reference.
