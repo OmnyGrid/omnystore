@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../../utils/hex.dart';
+import '../../utils/rfc3986.dart';
 import 'aws_credentials.dart';
 
 /// AWS Signature Version 4 signing, in both the forms S3 needs: `Authorization`
@@ -72,7 +74,7 @@ class SigV4 {
     final canonicalRequest = [
       method.toUpperCase(),
       _canonicalPath(url),
-      _canonicalQuery(url.queryParameters),
+      Rfc3986.canonicalQuery(url.queryParameters),
       canonicalHeaders,
       signedHeaders,
       payloadHash,
@@ -83,10 +85,10 @@ class SigV4 {
       algorithm,
       amzDate,
       scope,
-      _hex(sha256.convert(utf8.encode(canonicalRequest)).bytes),
+      Hex.encode(sha256.convert(utf8.encode(canonicalRequest)).bytes),
     ].join('\n');
 
-    final signature = _hex(
+    final signature = Hex.encode(
       _hmac(
         _signingKey(credentials.secretAccessKey, dateStamp, region, service),
         utf8.encode(stringToSign),
@@ -153,7 +155,7 @@ class SigV4 {
     final canonicalRequest = [
       method.toUpperCase(),
       _canonicalPath(url),
-      _canonicalQuery(query),
+      Rfc3986.canonicalQuery(query),
       canonicalHeaders,
       signedHeaders,
       unsignedPayload,
@@ -163,10 +165,10 @@ class SigV4 {
       algorithm,
       amzDate,
       scope,
-      _hex(sha256.convert(utf8.encode(canonicalRequest)).bytes),
+      Hex.encode(sha256.convert(utf8.encode(canonicalRequest)).bytes),
     ].join('\n');
 
-    final signature = _hex(
+    final signature = Hex.encode(
       _hmac(
         _signingKey(credentials.secretAccessKey, dateStamp, region, service),
         utf8.encode(stringToSign),
@@ -212,22 +214,7 @@ class SigV4 {
   /// into `%2520` and every signature would fail.
   static String _canonicalPath(Uri url) {
     if (url.pathSegments.isEmpty) return '/';
-    return '/${url.pathSegments.map(_uriEncode).join('/')}';
-  }
-
-  /// The canonical query string: parameters sorted by encoded name, then by
-  /// encoded value, joined as `k=v` pairs.
-  static String _canonicalQuery(Map<String, String> parameters) {
-    if (parameters.isEmpty) return '';
-    final encoded =
-        parameters.entries
-            .map((e) => MapEntry(_uriEncode(e.key), _uriEncode(e.value)))
-            .toList()
-          ..sort((a, b) {
-            final byKey = a.key.compareTo(b.key);
-            return byKey != 0 ? byKey : a.value.compareTo(b.value);
-          });
-    return encoded.map((e) => '${e.key}=${e.value}').join('&');
+    return '/${url.pathSegments.map(Rfc3986.encodeComponent).join('/')}';
   }
 
   /// Headers sorted by lower-cased name, values trimmed, one per line.
@@ -243,31 +230,6 @@ class SigV4 {
   /// requires for canonical header values.
   static String _trimValue(String value) =>
       value.trim().replaceAll(RegExp(r'\s+'), ' ');
-
-  /// RFC 3986 percent-encoding, with `/` encoded.
-  ///
-  /// Dart's [Uri.encodeComponent] leaves `!`, `*`, `'`, `(` and `)` unescaped;
-  /// AWS requires them escaped, and a key containing any of them would
-  /// otherwise produce a signature mismatch that is very hard to diagnose from
-  /// the `SignatureDoesNotMatch` response alone.
-  static String _uriEncode(String value) {
-    const unreserved =
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        'abcdefghijklmnopqrstuvwxyz'
-        '0123456789-._~';
-    final buffer = StringBuffer();
-    for (final byte in utf8.encode(value)) {
-      final char = String.fromCharCode(byte);
-      if (unreserved.contains(char)) {
-        buffer.write(char);
-      } else {
-        buffer.write(
-          '%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-        );
-      }
-    }
-    return buffer.toString();
-  }
 
   /// The four-step HMAC chain deriving the request signing key.
   static List<int> _signingKey(
@@ -287,7 +249,4 @@ class SigV4 {
 
   static List<int> _hmac(List<int> key, List<int> data) =>
       Hmac(sha256, key).convert(data).bytes;
-
-  static String _hex(List<int> bytes) =>
-      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 }

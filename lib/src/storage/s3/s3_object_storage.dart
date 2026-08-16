@@ -4,7 +4,10 @@ import 'package:http/http.dart' as http;
 
 import '../../exceptions/omnystore_exception.dart';
 import '../../utils/checksum.dart';
+import '../../utils/hex.dart';
 import '../../utils/http_dates.dart';
+import '../../utils/names.dart';
+import '../cloud_support.dart';
 import '../object_storage.dart';
 import 'aws_credentials.dart';
 import 'sig_v4.dart';
@@ -104,7 +107,7 @@ class S3ObjectStorage implements ObjectStorage {
     this.storageClass,
     this.serverSideEncryption,
     http.Client? httpClient,
-  }) : prefix = _normalizePrefix(prefix),
+  }) : prefix = CloudStorageSupport.normalizePrefix(prefix),
        _http = httpClient ?? http.Client(),
        _ownsClient = httpClient == null;
 
@@ -236,7 +239,7 @@ class S3ObjectStorage implements ObjectStorage {
       throw await _errorFor(response, key, 'read');
     }
 
-    final total = _totalSizeOf(response);
+    final total = CloudStorageSupport.totalSizeOf(response);
     final length = response.contentLength ?? total;
     return ObjectReader(
       object: StoredObject(
@@ -354,7 +357,7 @@ class S3ObjectStorage implements ObjectStorage {
       extraQuery: {
         if (filename != null)
           'response-content-disposition':
-              'attachment; filename="${_sanitizeFilename(filename)}"',
+              'attachment; filename="${Names.sanitizeForHeader(filename)}"',
         'response-content-type': ?contentType,
       },
     );
@@ -491,32 +494,22 @@ class S3ObjectStorage implements ObjectStorage {
       );
     }
     return usePathStyle
-        ? base.replace(path: '${_trimSlashes(base.path)}/$bucket')
+        ? base.replace(
+            path: '${CloudStorageSupport.trimSlashes(base.path)}/$bucket',
+          )
         : base.replace(host: '$bucket.${base.host}');
   }
 
   Uri _urlFor(String key) {
     final full = '$prefix$key';
     final base = _bucketUrl();
-    final basePath = _trimSlashes(base.path);
+    final basePath = CloudStorageSupport.trimSlashes(base.path);
     return base.replace(
       path: basePath.isEmpty ? '/$full' : '/$basePath/$full',
       // Drop any query the base endpoint carried; it is not part of an object
       // URL and would corrupt the canonical request.
       queryParameters: null,
     );
-  }
-
-  /// The object's full size, taken from `content-range` for a partial response
-  /// and from `content-length` otherwise.
-  static int _totalSizeOf(http.StreamedResponse response) {
-    final contentRange = response.headers['content-range'];
-    if (contentRange != null) {
-      final total = contentRange.split('/').lastOrNull;
-      final parsed = total == null ? null : int.tryParse(total.trim());
-      if (parsed != null) return parsed;
-    }
-    return response.contentLength ?? 0;
   }
 
   /// The SHA-256 recorded at upload, if the object carries one.
@@ -534,42 +527,18 @@ class S3ObjectStorage implements ObjectStorage {
     final native = headers['x-amz-checksum-sha256'];
     if (native == null || native.isEmpty) return null;
     try {
-      return base64Decode(
-        native,
-      ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      return Hex.encode(base64Decode(native));
     } on FormatException {
       return null;
     }
   }
 
-  static String _normalizePrefix(String prefix) {
-    final trimmed = _trimSlashes(prefix);
-    return trimmed.isEmpty ? '' : '$trimmed/';
-  }
-
-  static String _trimSlashes(String value) {
-    var result = value;
-    while (result.startsWith('/')) {
-      result = result.substring(1);
-    }
-    while (result.endsWith('/')) {
-      result = result.substring(0, result.length - 1);
-    }
-    return result;
-  }
-
   static String? _unquote(String? value) => value?.replaceAll('"', '');
-
-  /// Strips quotes and control characters from a filename bound for a
-  /// `content-disposition` header, where an unescaped quote would let the rest
-  /// of the header be rewritten.
-  static String _sanitizeFilename(String filename) =>
-      filename.replaceAll(RegExp(r'[\x00-\x1f"\\]'), '').replaceAll('\n', '');
 
   /// The `<Message>` of an S3 XML error, or the raw body if it has none.
   static String _messageIn(String body) =>
       _xmlValues(body, 'Message').firstOrNull ??
-      (body.length > 200 ? '${body.substring(0, 200)}…' : body);
+      CloudStorageSupport.truncateBody(body);
 
   /// The text content of every `<tag>` in [xml].
   ///

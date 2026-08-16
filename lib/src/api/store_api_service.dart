@@ -17,9 +17,25 @@ import '../services/asset_download.dart';
 import '../services/omnystore_api.dart';
 import '../storage/object_storage.dart';
 import '../utils/json.dart';
+import '../utils/names.dart';
 import '../utils/version_codec.dart';
 import '../version.dart';
 import 'api_errors.dart';
+
+/// A route handler: the request, plus the path parameters the router matched.
+typedef _Handler =
+    Future<HubResponse> Function(
+      HubRequest request,
+      Map<String, String> params,
+    );
+
+/// Wraps a handler with error rendering, and — when `mutating` is set — with
+/// the API's write guard.
+///
+/// Each `_*Routes` group receives one of these rather than the guard and logger
+/// separately, so a group cannot forget to wrap a handler or mismark a mutating
+/// route as read-only.
+typedef _Route = _Handler Function(_Handler handler, {bool mutating});
 
 /// Builds the `/api/v1` REST surface over any [OmnyStoreApi].
 ///
@@ -122,13 +138,7 @@ class StoreApiService {
   }) {
     final router = RouterService(name: name, mount: mount);
 
-    /// Wraps [handler] with error rendering, and with the write guard when the
-    /// route mutates state.
-    Future<HubResponse> Function(HubRequest, Map<String, String>) route(
-      Future<HubResponse> Function(HubRequest request, Map<String, String> p)
-      handler, {
-      bool mutating = false,
-    }) =>
+    _Handler route(_Handler handler, {bool mutating = false}) =>
         (request, params) => ApiErrors.guard(
           () async {
             if (mutating) writeGuard?.call(request);
@@ -138,7 +148,40 @@ class StoreApiService {
           request: request,
         );
 
-    // ------------------------------------------------------ organizations --
+    _organizationRoutes(router, store, route);
+    _projectRoutes(router, store, route);
+    _packageRoutes(router, store, route);
+    _releaseRoutes(router, store, route);
+    _assetRoutes(
+      router,
+      store,
+      route,
+      redirectLifetime: redirectLifetime,
+      recordDownloads: recordDownloads,
+      captureClientAddress: captureClientAddress,
+      logger: logger,
+    );
+
+    router.get(
+      '$basePath/providers',
+      route(
+        (request, _) async => _jsonList(
+          await store.listProviders(
+            organization: request.uri.queryParameters['organization'],
+          ),
+        ),
+      ),
+    );
+
+    return router;
+  }
+
+  /// Registers `/organizations`, the top of the ownership hierarchy.
+  static void _organizationRoutes(
+    RouterService router,
+    OmnyStoreApi store,
+    _Route route,
+  ) {
     router
       ..get(
         '$basePath/organizations',
@@ -212,8 +255,14 @@ class StoreApiService {
               _jsonList(await store.listPackages(organizationId: p['id']!)),
         ),
       );
+  }
 
-    // ----------------------------------------------------------- projects --
+  /// Registers `/projects`, the middle of the ownership hierarchy.
+  static void _projectRoutes(
+    RouterService router,
+    OmnyStoreApi store,
+    _Route route,
+  ) {
     router
       ..get(
         '$basePath/projects',
@@ -283,8 +332,20 @@ class StoreApiService {
               _jsonList(await store.listPackages(projectId: p['id']!)),
         ),
       );
+  }
 
-    // ----------------------------------------------------------- packages --
+  /// Registers `/packages`, plus the release and download routes nested under
+  /// a package.
+  ///
+  /// Order matters here: `/packages/<id>/releases/latest` is registered before
+  /// `/packages/<id>/releases/<version>`, and every nested route before the
+  /// bare `/packages/<id>`, because the router answers with the first entry
+  /// that matches.
+  static void _packageRoutes(
+    RouterService router,
+    OmnyStoreApi store,
+    _Route route,
+  ) {
     router
       ..get(
         '$basePath/packages',
@@ -318,8 +379,6 @@ class StoreApiService {
           );
         }, mutating: true),
       )
-      // Registered before `/packages/<id>` so the literal segment wins; the
-      // router returns the first matching entry.
       ..get(
         '$basePath/packages/<id>/releases/latest',
         route((request, p) async {
@@ -463,8 +522,14 @@ class StoreApiService {
           return HubResponse(statusCode: 204);
         }, mutating: true),
       );
+  }
 
-    // ----------------------------------------------------------- releases --
+  /// Registers `/releases`, including asset upload and channel promotion.
+  static void _releaseRoutes(
+    RouterService router,
+    OmnyStoreApi store,
+    _Route route,
+  ) {
     router
       ..get(
         '$basePath/releases/<id>/assets',
@@ -554,8 +619,19 @@ class StoreApiService {
           return HubResponse(statusCode: 204);
         }, mutating: true),
       );
+  }
 
-    // ------------------------------------------------------------- assets --
+  /// Registers `/assets`, including the download route that redirects to a
+  /// presigned URL when the holding provider can issue one.
+  static void _assetRoutes(
+    RouterService router,
+    OmnyStoreApi store,
+    _Route route, {
+    required Duration redirectLifetime,
+    required bool recordDownloads,
+    required bool captureClientAddress,
+    required Logger logger,
+  }) {
     router
       ..get(
         '$basePath/assets/<id>/download',
@@ -586,20 +662,6 @@ class StoreApiService {
           return HubResponse(statusCode: 204);
         }, mutating: true),
       );
-
-    // ---------------------------------------------------------- providers --
-    router.get(
-      '$basePath/providers',
-      route(
-        (request, _) async => _jsonList(
-          await store.listProviders(
-            organization: request.uri.queryParameters['organization'],
-          ),
-        ),
-      ),
-    );
-
-    return router;
   }
 
   /// Serves an asset: a redirect when the provider can issue a URL, otherwise
@@ -668,7 +730,8 @@ class StoreApiService {
         // restarting a multi-gigabyte artifact from zero.
         'accept-ranges': 'bytes',
         'content-disposition':
-            'attachment; filename="${_sanitize(download.asset.name)}"',
+            'attachment; '
+            'filename="${Names.sanitizeForHeader(download.asset.name)}"',
         'x-omnystore-sha256': download.asset.sha256,
         if (download.range != null)
           'content-range': download.range!.toContentRange(
@@ -772,12 +835,6 @@ class StoreApiService {
     }
     return parsed.toUtc();
   }
-
-  /// Strips quotes and control characters bound for a `content-disposition`
-  /// header, where an unescaped quote would let the rest of the header be
-  /// rewritten by a crafted asset name.
-  static String _sanitize(String filename) =>
-      filename.replaceAll(RegExp(r'[\x00-\x1f"\\]'), '');
 }
 
 /// Convenience for the tests and for callers building a response themselves.
