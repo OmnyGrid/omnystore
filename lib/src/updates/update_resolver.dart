@@ -2,6 +2,7 @@ import 'package:pub_semver/pub_semver.dart';
 
 import '../channels/release_channel.dart';
 import '../models/asset.dart';
+import '../models/asset_kinds.dart';
 import '../models/release.dart';
 import '../models/update_info.dart';
 import '../utils/version_codec.dart';
@@ -84,7 +85,9 @@ class UpdateResolver {
   /// * Among equals, an `installer` beats an `archive`, and ties break on name
   ///   so the choice is deterministic across calls.
   static Asset? selectAsset(List<Asset> assets, {String? platform}) {
-    final installable = assets.where((a) => !_isAuxiliary(a)).toList();
+    final installable = assets
+        .where((a) => !AssetKinds.isAuxiliary(a))
+        .toList();
     if (installable.isEmpty) return null;
 
     if (platform == null) {
@@ -103,36 +106,7 @@ class UpdateResolver {
         : installable.where((a) => a.platform == null).toList();
     if (eligible.isEmpty) return null;
 
-    eligible.sort(_preferInstallers);
+    eligible.sort(AssetKinds.byPreference);
     return eligible.first;
-  }
-
-  /// Whether an asset accompanies the release rather than being installable.
-  static bool _isAuxiliary(Asset asset) {
-    const auxiliaryKinds = {'checksums', 'checksum', 'signature', 'sbom'};
-    if (asset.kind != null && auxiliaryKinds.contains(asset.kind)) return true;
-    const auxiliarySuffixes = [
-      '.sha256',
-      '.sha512',
-      '.md5',
-      '.sig',
-      '.asc',
-      '.sbom.json',
-    ];
-    final name = asset.name.toLowerCase();
-    return auxiliarySuffixes.any(name.endsWith) ||
-        name == 'checksums.txt' ||
-        name == 'sha256sums.txt';
-  }
-
-  static int _preferInstallers(Asset a, Asset b) {
-    int rank(Asset asset) => switch (asset.kind) {
-      'installer' => 0,
-      'archive' => 1,
-      null => 2,
-      _ => 3,
-    };
-    final byKind = rank(a).compareTo(rank(b));
-    return byKind != 0 ? byKind : a.name.compareTo(b.name);
   }
 }

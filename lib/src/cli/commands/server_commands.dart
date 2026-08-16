@@ -40,8 +40,20 @@ class ServerCommand extends Command<int> {
   /// The environment, for token and path defaults.
   final Map<String, String> environment;
 
+  /// Where the startup banner goes.
+  ///
+  /// Injected like every other CLI output, so an embedding tool or a test can
+  /// capture it and `--quiet` can suppress it. Writing to `stdout` directly
+  /// would make the banner the one piece of CLI output that cannot be
+  /// redirected.
+  final StringSink out;
+
   /// Creates the command.
-  ServerCommand({required this.globals, required this.environment}) {
+  ServerCommand({
+    required this.globals,
+    required this.environment,
+    StringSink? out,
+  }) : out = out ?? stdout {
     argParser
       ..addOption(
         'port',
@@ -179,27 +191,29 @@ class ServerCommand extends Command<int> {
     );
 
     final scheme = tls == null ? 'http' : 'https';
-    stdout.writeln('OmnyStore $omnyStoreVersion');
-    stdout.writeln('  data:     $dataDir');
-    stdout.writeln('  API:      $scheme://localhost:${server.port}/api/v1');
-    stdout.writeln('  health:   $scheme://localhost:${server.port}/health');
-    if (server.nodes != null) {
-      final wsScheme = tls == null ? 'ws' : 'wss';
-      stdout.writeln(
-        '  nodes:    $wsScheme://localhost:${server.port}'
-        '${argResults!.option('node-mount') ?? '/_node'}',
-      );
+    if (!quiet) {
+      out.writeln('OmnyStore $omnyStoreVersion');
+      out.writeln('  data:     $dataDir');
+      out.writeln('  API:      $scheme://localhost:${server.port}/api/v1');
+      out.writeln('  health:   $scheme://localhost:${server.port}/health');
+      if (server.nodes != null) {
+        final wsScheme = tls == null ? 'ws' : 'wss';
+        out.writeln(
+          '  nodes:    $wsScheme://localhost:${server.port}'
+          '${argResults!.option('node-mount') ?? '/_node'}',
+        );
+      }
+      if (publishToken == null) {
+        out.writeln(
+          '  writes:   OPEN — anyone who can reach this server can publish. '
+          'Pass --publish-token to require authentication.',
+        );
+      }
+      out.writeln('Press Ctrl-C to stop.');
     }
-    if (publishToken == null) {
-      stdout.writeln(
-        '  writes:   OPEN — anyone who can reach this server can publish. '
-        'Pass --publish-token to require authentication.',
-      );
-    }
-    stdout.writeln('Press Ctrl-C to stop.');
 
     await _awaitInterrupt();
-    stdout.writeln('\nShutting down…');
+    if (!quiet) out.writeln('\nShutting down…');
     await server.stop();
     await local.close();
     return 0;
@@ -252,8 +266,15 @@ class NodeCommand extends Command<int> {
   /// The environment, for token and path defaults.
   final Map<String, String> environment;
 
+  /// Where the startup banner goes; see [ServerCommand.out].
+  final StringSink out;
+
   /// Creates the command.
-  NodeCommand({required this.globals, required this.environment}) {
+  NodeCommand({
+    required this.globals,
+    required this.environment,
+    StringSink? out,
+  }) : out = out ?? stdout {
     argParser
       ..addOption(
         'hub',
@@ -344,17 +365,20 @@ class NodeCommand extends Command<int> {
     );
 
     await node.start();
-    stdout.writeln('OmnyStore node $omnyStoreVersion');
-    stdout.writeln('  id:            $nodeId');
-    stdout.writeln('  hub:           $hubUrl');
-    stdout.writeln('  organizations: ${organizations.join(', ')}');
-    stdout.writeln('  data:          $dataDir');
-    stdout.writeln('Press Ctrl-C to stop.');
+    final quiet = globals.flag('quiet');
+    if (!quiet) {
+      out.writeln('OmnyStore node $omnyStoreVersion');
+      out.writeln('  id:            $nodeId');
+      out.writeln('  hub:           $hubUrl');
+      out.writeln('  organizations: ${organizations.join(', ')}');
+      out.writeln('  data:          $dataDir');
+      out.writeln('Press Ctrl-C to stop.');
+    }
 
     await _awaitInterrupt();
     // Draining first lets the hub stop placing new artifacts here while
     // downloads already in flight finish.
-    stdout.writeln('\nDraining and shutting down…');
+    if (!quiet) out.writeln('\nDraining and shutting down…');
     await node.drain();
     await node.close();
     return 0;

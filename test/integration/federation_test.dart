@@ -376,6 +376,73 @@ void main() {
       );
     });
 
+    test('reports a rejected upload promptly, without deadlocking', () async {
+      // The node rejects `attachAsset` *before* subscribing to the chunk
+      // stream — a duplicate name is settled up front. Nothing is then
+      // listening to that stream, so closing it can never complete: the
+      // session has to notice the rejection instead of waiting on the close,
+      // or the caller hangs until its RPC timeout.
+      final asset = await seedAsset('first');
+
+      await expectLater(
+        hub.attachAsset(
+          releaseId: asset.releaseId,
+          name: asset.name,
+          data: Stream.value(utf8.encode('second')),
+        ),
+        throwsA(isA<ConflictException>()),
+      ).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => fail('the upload deadlocked instead of reporting'),
+      );
+
+      expect(node.rpc.openUploads, 0);
+    });
+
+    test('rejects an unsafe asset name promptly', () async {
+      final asset = await seedAsset('payload');
+
+      await expectLater(
+        hub.attachAsset(
+          releaseId: asset.releaseId,
+          name: '../../etc/passwd',
+          data: Stream.value(utf8.encode('x')),
+        ),
+        throwsA(isA<ValidationException>()),
+      ).timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => fail('the upload deadlocked instead of reporting'),
+      );
+    });
+
+    test('stops buffering once the upload is known to have failed', () async {
+      // A rejected upload that kept accepting chunks would hold the whole
+      // artifact in memory on its way to an error already decided.
+      final asset = await seedAsset('first');
+      var chunksSent = 0;
+
+      await expectLater(
+        hub.attachAsset(
+          releaseId: asset.releaseId,
+          name: asset.name,
+          data:
+              Stream.fromIterable(
+                List.generate(200, (i) => utf8.encode('chunk-$i-padding-')),
+              ).map((chunk) {
+                chunksSent++;
+                return chunk;
+              }),
+        ),
+        throwsA(isA<ConflictException>()),
+      );
+
+      expect(
+        chunksSent,
+        lessThan(200),
+        reason: 'the source should have been abandoned, not drained',
+      );
+    });
+
     test('unwinds a failed upload, leaving nothing behind', () async {
       final org = await hub.createOrganization(name: 'acme');
       final project = await hub.createProject(

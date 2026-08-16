@@ -49,6 +49,7 @@ export 'src/utils/http_dates.dart';
 export 'src/utils/ids.dart';
 export 'src/utils/json.dart';
 export 'src/utils/names.dart';
+export 'src/utils/platforms.dart';
 export 'src/utils/version_codec.dart';
 
 // Channels and versions.
@@ -56,6 +57,7 @@ export 'src/channels/release_channel.dart';
 
 // Models.
 export 'src/models/asset.dart';
+export 'src/models/asset_kinds.dart';
 export 'src/models/asset_location.dart';
 export 'src/models/download_record.dart';
 export 'src/models/organization.dart';

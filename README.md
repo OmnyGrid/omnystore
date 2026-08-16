@@ -227,7 +227,7 @@ final update = await client.checkForUpdates(
   packageReference: 'omnyagent',
   currentVersion: Version.parse(myVersion),
   channel: ReleaseChannel.beta,
-  platform: 'macos-arm64',
+  platform: Platforms.current,   // 'macos-arm64' on Apple Silicon
 );
 
 if (update.isInstallable) {
@@ -243,6 +243,16 @@ if (update.isInstallable) {
 `isInstallable` rather than `updateAvailable`: an update that ships no artifact
 for this platform is a real state, and a download button gated on the wrong one
 offers a dead end.
+
+One release carries every architecture — `macos-x64` and `macos-arm64` are two
+artifacts on the same `1.4.0`, not two releases. `Platforms.current` reports
+what this process is running on, and the match is **exact**: a client is never
+handed a build for another architecture, because an Intel binary on Apple
+Silicon fails at launch, on the user's machine. The CLI defaults to it too:
+
+```sh
+omnystore download --package omnyagent -o /opt     # picks this machine's build
+```
 
 ## Channels
 
@@ -374,7 +384,10 @@ omnystore release publish --package omnyagent --version 1.4.0 \
   --asset build/omnyagent-macos-arm64.tar.gz:macos-arm64
 
 omnystore release latest --package omnyagent --channel beta
+
+omnystore download --package omnyagent -o /opt                  # this machine
 omnystore download --package omnyagent --platform linux-x64 -o /opt
+omnystore download --package omnyagent --platform all -o dist/  # every build
 ```
 
 See [doc/cli.md](doc/cli.md) for the full reference.

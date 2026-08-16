@@ -183,7 +183,17 @@ The version's pre-release tag decides the channel: `1.2.0-dev.3` is dev,
 `--notes @path` reads a file — release notes are usually a changelog, and shells
 make multi-line arguments awkward.
 
-`--asset path:platform` attaches a file and tags its platform in one flag.
+`--asset path:platform:kind` attaches a file and tags it in one flag; both tags
+are optional, so `path`, `path:platform` and `path:platform:kind` are all
+valid. A Windows path keeps working — `C:\build\agent.exe` is not mistaken for
+a tag, because a drive letter's tail contains a path separator.
+
+```sh
+--asset build/agent.dmg:macos-arm64:installer
+--asset build/agent.tar.gz:macos-arm64:archive
+--asset build/agent.tar.gz.sha256:macos-arm64      # kind inferred from .sha256
+```
+
 `--draft` stores the release without offering it to anyone.
 
 ```sh
@@ -228,23 +238,84 @@ Uploads compute the file's checksum locally and require the server to agree
 of publishing bad bytes.
 
 `--kind` marks what an artifact *is*: `installer`, `archive`, `checksums`,
-`signature`. The update service never offers a checksum or signature file as
-*the* download.
+`signature`, `sbom`. The update service never offers a checksum or signature
+file as *the* download, and `omnystore download --kind` filters on the same
+vocabulary.
 
 ## `omnystore download`
 
 ```sh
+omnystore download --package omnyagent -o /opt              # this machine
 omnystore download --package omnyagent --platform linux-x64 -o /opt
+omnystore download --package omnyagent \
+  --platform linux-x64,macos-arm64 -o dist/                 # a list
+omnystore download --package omnyagent --platform all -o dist/
+omnystore download --package omnyagent --kind installer                 # a kind
+omnystore download --package omnyagent --platform all --kind checksums -o dist/
 omnystore download --package omnyagent --version 1.2.0 --asset agent.tar.gz
-omnystore download --package omnyagent --channel beta --platform macos-arm64
+omnystore download --package omnyagent --channel beta
 ```
 
-Resolves the release, picks the artifact, streams it with a progress bar,
-resumes an interrupted transfer, and verifies the checksum. An
+**`--platform` defaults to the machine you are on** — `macos-arm64` on Apple
+Silicon, `macos-x64` on Intel, and so on. Downloading an artifact almost always
+means "the one I can run", and requiring the flag every time invites fetching a
+build for the wrong architecture.
+
+Aliases other toolchains use are understood, so `--platform darwin-x86_64` and
+`--platform macos-x64` select the same artifact.
+
+| `--platform …`              | Selects                                     |
+| --------------------------- | ------------------------------------------- |
+| *(omitted)*                 | the artifact for this machine               |
+| `linux-x64`                 | the artifact for that platform              |
+| `linux-x64,macos-arm64`     | one artifact per platform — repeatable, or comma-separated |
+| `all`                       | every artifact in the release               |
+| `any`                       | ignore platform tags and choose by name     |
+
+`all` and `any` select on their own; combining either with a specific platform
+is a usage error rather than a silently ignored flag.
+
+`--kind` narrows the same way, and composes with `--platform`:
+
+| `--kind …`             | Selects                                            |
+| ---------------------- | -------------------------------------------------- |
+| *(omitted)*            | whatever is installable — never a checksum file or a signature |
+| `installer`            | only installers                                     |
+| `installer,archive`    | either — repeatable, or comma-separated             |
+| `all`                  | no kind filtering at all                            |
+
+With several artifacts for one platform and no `--kind`, an `installer` wins
+over an `archive`, which wins over an untagged artifact — the same order the
+update service uses, so `download` and `check-update` cannot disagree about
+which artifact *is* the release.
+
+A kind is read from the publisher's tag when there is one, and otherwise
+inferred from the filename for the auxiliary kinds only: `.sha256`, `.sha512`,
+`.md5`, `checksums.txt` and `sha256sums.txt` are `checksums`; `.sig` and `.asc`
+are `signature`; `.sbom.json` is `sbom`. An untagged `.dmg` stays untagged —
+guessing `installer` from an extension would change which artifact clients are
+offered.
+
+`--platform all` deliberately keeps the auxiliary artifacts, because a mirror
+or a GitHub-release step wants the digests too. Narrow it with `--kind` when
+you don't: `--platform all --kind installer,archive`.
+
+With more than one artifact selected, `-o` names a **directory**, created if it
+does not exist, and each artifact keeps its own filename. Two platforms that
+resolve to the same artifact — `macos-x64` and `darwin-x86_64`, say — download
+it once.
+
+Every platform is resolved before the first byte is fetched, so a typo in the
+third of four platforms fails immediately instead of leaving a partial bundle
+on disk. `--platform any` with several artifacts and no way to choose lists
+them and exits `64` rather than guessing.
+
+Resolves the release, picks the artifacts, streams each with a progress bar,
+resumes an interrupted transfer, and verifies every checksum. An
 already-downloaded, verified file transfers nothing.
 
-When a release has several artifacts and none is selected, the command lists
-them and exits `64` rather than guessing.
+Against a `--data` registry the bytes are already on this machine, so the
+artifact is copied out and verified rather than fetched over HTTP.
 
 ## `omnystore check-update`
 
@@ -256,6 +327,11 @@ omnystore check-update --package omnyagent --current 1.0.0 --channel beta \
 
 Exits `0` when current, `10` when an update exists. `--json` gives the full
 answer including the release and the matching artifact.
+
+`--platform` also defaults to this machine, so "is there an update" means "one I
+can actually install". A release that shipped without a build for this
+architecture reports the update *and* says there is nothing to install — pass
+`--platform any` to ignore platform entirely.
 
 ## `omnystore providers`
 

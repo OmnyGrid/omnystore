@@ -46,6 +46,16 @@
   typed exceptions from the error envelope.
 - `UpdateChecker` with change-only polling; `DownloadManager` with resume,
   retry and mandatory checksum verification.
+- `Platforms.current` reports this process's `os-arch` token, and the CLI's
+  `download` and `check-update` default to it — so an artifact is fetched for
+  the machine asking, and never for another architecture.
+- `omnystore download` selects by platform and by kind: one platform, a list,
+  or `all` for a whole release bundle; `--kind installer,archive` and friends
+  narrow by what an artifact *is*. Every selection is resolved before the first
+  byte is fetched, and each artifact is checksum-verified individually.
+- `AssetKinds` is the single vocabulary for `installer`, `archive`,
+  `checksums`, `signature` and `sbom`, read by both the update service and the
+  CLI, so neither can offer a signature file as the thing to install.
 - `omnystore` CLI: server, node, org, project, package, release, asset,
   download, check-update and providers, against a remote server or a local
   directory, with `--json` output and meaningful exit codes.
@@ -54,5 +64,7 @@
 
 - Twenty runnable examples, an architecture overview, and REST, CLI, client,
   federation, storage and workflow guides.
-- 411 tests: unit, integration over real sockets, the federation protocol end
-  to end, AWS's published SigV4 vectors, and real RSA signature verification.
+- 785 tests at 88.6% line coverage: unit, integration over real sockets, the
+  federation protocol end to end, one conformance suite run against all four
+  `OmnyStoreApi` implementations, AWS's published SigV4 vectors, and real RSA
+  signature verification.

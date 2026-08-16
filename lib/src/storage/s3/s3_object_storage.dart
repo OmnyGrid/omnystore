@@ -4,7 +4,10 @@ import 'package:http/http.dart' as http;
 
 import '../../exceptions/omnystore_exception.dart';
 import '../../utils/checksum.dart';
+import '../../utils/hex.dart';
 import '../../utils/http_dates.dart';
+import '../../utils/names.dart';
+import '../cloud_support.dart';
 import '../object_storage.dart';
 import 'aws_credentials.dart';
 import 'sig_v4.dart';
@@ -83,6 +86,13 @@ class S3ObjectStorage implements ObjectStorage {
   /// The maximum size of a single-part `PUT`, which is what [put] uses.
   static const int maxSinglePartBytes = 5 * 1024 * 1024 * 1024;
 
+  /// The user-metadata key the SHA-256 is recorded under.
+  ///
+  /// S3's own `etag` is an MD5 for single-part uploads and something else
+  /// entirely for multipart ones, so it is never a SHA-256 — the digest has to
+  /// travel in user metadata to survive at all.
+  static const String _sha256Metadata = 'sha256';
+
   /// Creates an S3-backed store.
   ///
   /// Pass [httpClient] to share a connection pool with the rest of the process;
@@ -97,7 +107,7 @@ class S3ObjectStorage implements ObjectStorage {
     this.storageClass,
     this.serverSideEncryption,
     http.Client? httpClient,
-  }) : prefix = _normalizePrefix(prefix),
+  }) : prefix = CloudStorageSupport.normalizePrefix(prefix),
        _http = httpClient ?? http.Client(),
        _ownsClient = httpClient == null;
 
@@ -142,13 +152,17 @@ class S3ObjectStorage implements ObjectStorage {
       request = streamed;
       // Populated by the time the response arrives, because the request cannot
       // complete before the body stream closes.
-      checksum = await _sendAndDescribe(
-        request,
-        key,
-        contentType,
-        metadata,
-        () => observed,
-      );
+      checksum = await _sendAndDescribe(request, key, contentType, {
+        ...metadata,
+        // Only recordable when the caller already knows it: headers go out
+        // before the first byte of a streamed body, so the digest computed
+        // *during* the upload cannot be attached to the same request. S3 has
+        // no metadata-only update — changing it means a server-side COPY of
+        // the whole object — so paying that on every upload to populate an
+        // informational field would be a bad trade. See `head`.
+        if (expectedSha256 != null)
+          _sha256Metadata: expectedSha256.toLowerCase(),
+      }, () => observed);
       if (checksum.sizeBytes != length) {
         // The object is already in the bucket at this point; remove it rather
         // than leave a truncated artifact that would fail every download.
@@ -174,7 +188,9 @@ class S3ObjectStorage implements ObjectStorage {
         request,
         key,
         contentType,
-        metadata,
+        // The body was buffered, so the digest is known before the request is
+        // sent and can be recorded for `head` to read back.
+        {...metadata, _sha256Metadata: computed.sha256},
         () => computed,
       );
     }
@@ -223,7 +239,7 @@ class S3ObjectStorage implements ObjectStorage {
       throw await _errorFor(response, key, 'read');
     }
 
-    final total = _totalSizeOf(response);
+    final total = CloudStorageSupport.totalSizeOf(response);
     final length = response.contentLength ?? total;
     return ObjectReader(
       object: StoredObject(
@@ -341,7 +357,7 @@ class S3ObjectStorage implements ObjectStorage {
       extraQuery: {
         if (filename != null)
           'response-content-disposition':
-              'attachment; filename="${_sanitizeFilename(filename)}"',
+              'attachment; filename="${Names.sanitizeForHeader(filename)}"',
         'response-content-type': ?contentType,
       },
     );
@@ -478,32 +494,22 @@ class S3ObjectStorage implements ObjectStorage {
       );
     }
     return usePathStyle
-        ? base.replace(path: '${_trimSlashes(base.path)}/$bucket')
+        ? base.replace(
+            path: '${CloudStorageSupport.trimSlashes(base.path)}/$bucket',
+          )
         : base.replace(host: '$bucket.${base.host}');
   }
 
   Uri _urlFor(String key) {
     final full = '$prefix$key';
     final base = _bucketUrl();
-    final basePath = _trimSlashes(base.path);
+    final basePath = CloudStorageSupport.trimSlashes(base.path);
     return base.replace(
       path: basePath.isEmpty ? '/$full' : '/$basePath/$full',
       // Drop any query the base endpoint carried; it is not part of an object
       // URL and would corrupt the canonical request.
       queryParameters: null,
     );
-  }
-
-  /// The object's full size, taken from `content-range` for a partial response
-  /// and from `content-length` otherwise.
-  static int _totalSizeOf(http.StreamedResponse response) {
-    final contentRange = response.headers['content-range'];
-    if (contentRange != null) {
-      final total = contentRange.split('/').lastOrNull;
-      final parsed = total == null ? null : int.tryParse(total.trim());
-      if (parsed != null) return parsed;
-    }
-    return response.contentLength ?? 0;
   }
 
   /// The SHA-256 recorded at upload, if the object carries one.
@@ -521,42 +527,18 @@ class S3ObjectStorage implements ObjectStorage {
     final native = headers['x-amz-checksum-sha256'];
     if (native == null || native.isEmpty) return null;
     try {
-      return base64Decode(
-        native,
-      ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      return Hex.encode(base64Decode(native));
     } on FormatException {
       return null;
     }
   }
 
-  static String _normalizePrefix(String prefix) {
-    final trimmed = _trimSlashes(prefix);
-    return trimmed.isEmpty ? '' : '$trimmed/';
-  }
-
-  static String _trimSlashes(String value) {
-    var result = value;
-    while (result.startsWith('/')) {
-      result = result.substring(1);
-    }
-    while (result.endsWith('/')) {
-      result = result.substring(0, result.length - 1);
-    }
-    return result;
-  }
-
   static String? _unquote(String? value) => value?.replaceAll('"', '');
-
-  /// Strips quotes and control characters from a filename bound for a
-  /// `content-disposition` header, where an unescaped quote would let the rest
-  /// of the header be rewritten.
-  static String _sanitizeFilename(String filename) =>
-      filename.replaceAll(RegExp(r'[\x00-\x1f"\\]'), '').replaceAll('\n', '');
 
   /// The `<Message>` of an S3 XML error, or the raw body if it has none.
   static String _messageIn(String body) =>
       _xmlValues(body, 'Message').firstOrNull ??
-      (body.length > 200 ? '${body.substring(0, 200)}…' : body);
+      CloudStorageSupport.truncateBody(body);
 
   /// The text content of every `<tag>` in [xml].
   ///

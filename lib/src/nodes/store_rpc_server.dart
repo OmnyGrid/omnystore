@@ -629,6 +629,14 @@ class _UploadSession {
   Timer? _expiry;
   int received = 0;
 
+  /// The failure `attachAsset` reported, if it has already failed.
+  ///
+  /// It can fail *before* subscribing to the chunk stream — a duplicate asset
+  /// name, an unknown release, an unsafe filename are all rejected up front —
+  /// and that case needs handling explicitly. See [add] and [commit].
+  Object? _failure;
+  StackTrace? _failureStack;
+
   _UploadSession(
     this._chunks,
     this._pending, {
@@ -637,30 +645,63 @@ class _UploadSession {
   }) : _onExpire = onExpire,
        _timeout = timeout {
     _touch();
+    // Recorded rather than awaited, so a rejection that happens before any
+    // chunk arrives is visible to [add] and [commit] instead of surfacing only
+    // as a timeout.
+    _pending
+        .then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stack) {
+            _failure = error;
+            _failureStack = stack;
+          },
+        )
+        .ignore();
   }
 
   void add(List<int> data) {
+    // Fail fast. Without this, an upload whose `attachAsset` was rejected up
+    // front would keep buffering into a controller nobody is listening to —
+    // a multi-gigabyte artifact would be held in memory on its way to an
+    // error that was already decided.
+    _throwIfFailed();
     _touch();
     received += data.length;
     _chunks.add(data);
   }
 
   Future<Asset> commit() async {
-    await _chunks.close();
+    _throwIfFailed();
+    // Deliberately not awaited. `close()` completes only once the stream is
+    // *done*, which requires a listener — and if `attachAsset` was rejected
+    // before it subscribed, there is none, so awaiting here would hang until
+    // the caller's RPC timeout. Awaiting [_pending] is sufficient: it resolves
+    // only after `attachAsset` has consumed everything already queued.
+    unawaited(_chunks.close());
     return _pending;
   }
 
   Future<void> abort(String reason) async {
-    // Erroring the stream makes `attachAsset` fail, which unwinds the partial
-    // object out of storage — a commit-or-nothing guarantee even when the hub
-    // vanishes mid-upload.
-    _chunks.addError(StorageException('Upload aborted: $reason'));
-    await _chunks.close();
+    if (_failure == null) {
+      // Erroring the stream makes `attachAsset` fail, which unwinds the
+      // partial object out of storage — a commit-or-nothing guarantee even
+      // when the hub vanishes mid-upload. Skipped when it has already failed,
+      // since there is then nothing listening to receive the error.
+      _chunks.addError(StorageException('Upload aborted: $reason'));
+      unawaited(_chunks.close());
+    }
     try {
       await _pending;
     } on Object {
-      // Expected: the abort above is what failed it.
+      // Expected: either the abort above, or the failure that preceded it.
     }
+  }
+
+  /// Rethrows the failure `attachAsset` already reported, if any.
+  void _throwIfFailed() {
+    final failure = _failure;
+    if (failure == null) return;
+    Error.throwWithStackTrace(failure, _failureStack ?? StackTrace.current);
   }
 
   void _touch() {

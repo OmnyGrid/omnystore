@@ -6,8 +6,12 @@ import 'package:http/http.dart' as http;
 
 import '../../exceptions/omnystore_exception.dart';
 import '../../utils/checksum.dart';
+import '../../utils/hex.dart';
 import '../../utils/http_dates.dart';
 import '../../utils/json.dart';
+import '../../utils/names.dart';
+import '../../utils/rfc3986.dart';
+import '../cloud_support.dart';
 import '../object_storage.dart';
 import 'gcp_credentials.dart';
 
@@ -67,7 +71,7 @@ class GcsObjectStorage implements ObjectStorage {
     Uri? apiBase,
     this.storageClass,
     http.Client? httpClient,
-  }) : prefix = _normalizePrefix(prefix),
+  }) : prefix = CloudStorageSupport.normalizePrefix(prefix),
        apiBase = apiBase ?? Uri.https('storage.googleapis.com', '/'),
        _http = httpClient ?? http.Client(),
        _ownsClient = httpClient == null;
@@ -191,7 +195,7 @@ class GcsObjectStorage implements ObjectStorage {
       );
     }
 
-    final total = _totalSizeOf(response);
+    final total = CloudStorageSupport.totalSizeOf(response);
     return ObjectReader(
       object: StoredObject(
         key: key,
@@ -340,7 +344,7 @@ class GcsObjectStorage implements ObjectStorage {
     final seconds = expiresIn.inSeconds.clamp(1, 604800);
 
     final host = apiBase.host;
-    final canonicalPath = '/$bucket/${_encodePath('$prefix$key')}';
+    final canonicalPath = '/$bucket/${Rfc3986.encodePath('$prefix$key')}';
 
     final query = <String, String>{
       'X-Goog-Algorithm': 'GOOG4-RSA-SHA256',
@@ -350,14 +354,14 @@ class GcsObjectStorage implements ObjectStorage {
       'X-Goog-SignedHeaders': 'host',
       if (filename != null)
         'response-content-disposition':
-            'attachment; filename="${_sanitizeFilename(filename)}"',
+            'attachment; filename="${Names.sanitizeForHeader(filename)}"',
       'response-content-type': ?contentType,
     };
 
     final canonicalRequest = [
       'GET',
       canonicalPath,
-      _canonicalQuery(query),
+      Rfc3986.canonicalQuery(query),
       'host:$host\n',
       'host',
       'UNSIGNED-PAYLOAD',
@@ -367,10 +371,10 @@ class GcsObjectStorage implements ObjectStorage {
       'GOOG4-RSA-SHA256',
       timestamp,
       scope,
-      _hex(sha256.convert(utf8.encode(canonicalRequest)).bytes),
+      Hex.encode(sha256.convert(utf8.encode(canonicalRequest)).bytes),
     ].join('\n');
 
-    final signature = _hex(
+    final signature = Hex.encode(
       await credentials.signRsaSha256(
         Uint8List.fromList(utf8.encode(stringToSign)),
       ),
@@ -470,16 +474,6 @@ class GcsObjectStorage implements ObjectStorage {
     queryParameters: {'alt': 'media'},
   );
 
-  static int _totalSizeOf(http.StreamedResponse response) {
-    final contentRange = response.headers['content-range'];
-    if (contentRange != null) {
-      final total = contentRange.split('/').lastOrNull;
-      final parsed = total == null ? null : int.tryParse(total.trim());
-      if (parsed != null) return parsed;
-    }
-    return response.contentLength ?? 0;
-  }
-
   /// `yyyyMMddTHHmmssZ`, the timestamp form V4 signing uses.
   static String _basicIso8601(DateTime now) {
     final utc = now.toUtc();
@@ -488,60 +482,6 @@ class GcsObjectStorage implements ObjectStorage {
         '${two(utc.day)}T${two(utc.hour)}${two(utc.minute)}'
         '${two(utc.second)}Z';
   }
-
-  static String _canonicalQuery(Map<String, String> parameters) {
-    final encoded =
-        parameters.entries
-            .map(
-              (e) =>
-                  MapEntry(_encodeComponent(e.key), _encodeComponent(e.value)),
-            )
-            .toList()
-          ..sort((a, b) {
-            final byKey = a.key.compareTo(b.key);
-            return byKey != 0 ? byKey : a.value.compareTo(b.value);
-          });
-    return encoded.map((e) => '${e.key}=${e.value}').join('&');
-  }
-
-  /// Percent-encodes a path, leaving `/` as a separator.
-  static String _encodePath(String path) =>
-      path.split('/').map(_encodeComponent).join('/');
-
-  /// RFC 3986 percent-encoding, escaping everything outside the unreserved set.
-  static String _encodeComponent(String value) {
-    const unreserved =
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-    final buffer = StringBuffer();
-    for (final byte in utf8.encode(value)) {
-      final char = String.fromCharCode(byte);
-      if (unreserved.contains(char)) {
-        buffer.write(char);
-      } else {
-        buffer.write(
-          '%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}',
-        );
-      }
-    }
-    return buffer.toString();
-  }
-
-  static String _hex(List<int> bytes) =>
-      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-
-  static String _normalizePrefix(String prefix) {
-    var trimmed = prefix;
-    while (trimmed.startsWith('/')) {
-      trimmed = trimmed.substring(1);
-    }
-    while (trimmed.endsWith('/')) {
-      trimmed = trimmed.substring(0, trimmed.length - 1);
-    }
-    return trimmed.isEmpty ? '' : '$trimmed/';
-  }
-
-  static String _sanitizeFilename(String filename) =>
-      filename.replaceAll(RegExp(r'[\x00-\x1f"\\]'), '').replaceAll('\n', '');
 
   /// The `error.message` of a GCS JSON error, or the raw body.
   static String _messageIn(String body) {
@@ -554,6 +494,6 @@ class GcsObjectStorage implements ObjectStorage {
     } on FormatException {
       // Not JSON; fall through to the raw body.
     }
-    return body.length > 200 ? '${body.substring(0, 200)}…' : body;
+    return CloudStorageSupport.truncateBody(body);
   }
 }

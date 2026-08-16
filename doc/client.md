@@ -101,9 +101,19 @@ final update = await client.checkForUpdates(
   packageReference: 'omnyagent',
   currentVersion: Version.parse(myVersion),
   channel: ReleaseChannel.beta,
-  platform: 'macos-arm64',
+  platform: Platforms.current,   // 'macos-arm64' on Apple Silicon
 );
 ```
+
+`Platforms.current` reports this process's `os-arch` token, which is what an
+updater almost always wants — an Intel build offered to an Apple Silicon
+machine fails at launch, on the user's machine. It reads the architecture from
+the Dart VM's own target triple, and `Platforms.normalize` understands the
+spellings other toolchains use (`darwin-aarch64`, `osx-x86_64`, `win32-amd64`).
+
+It uses `dart:io`, so it is in `package:omnystore/omnystore.dart` rather than
+the web client barrel. A browser has no native architecture; pass
+`Platforms.web` there, or omit the platform entirely.
 
 Three outcomes worth distinguishing:
 

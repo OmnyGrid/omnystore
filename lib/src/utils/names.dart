@@ -59,6 +59,21 @@ class Names {
     return require(slug, field);
   }
 
+  /// Strips characters that would let [filename] break out of a quoted HTTP
+  /// header value.
+  ///
+  /// An asset name reaches `content-disposition: attachment; filename="…"` in
+  /// three places — the API's own download response and both cloud backends'
+  /// presigned URLs. An unescaped `"` there lets the rest of the header be
+  /// rewritten, and a control character can split it into two.
+  ///
+  /// The `\x00-\x1f` range already covers CR and LF, so newlines need no
+  /// separate pass. [requireFilename] rejects these on the way *in*; this is
+  /// the belt-and-braces pass on the way out, for names that predate the check
+  /// or arrive from another registry.
+  static String sanitizeForHeader(String filename) =>
+      filename.replaceAll(RegExp(r'[\x00-\x1f\x7f"\\]'), '');
+
   /// Validates an asset filename: a single path segment, never `.` or `..`,
   /// with no path separators and no control characters.
   ///

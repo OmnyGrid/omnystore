@@ -468,6 +468,614 @@ void main() {
     );
   });
 
+  group('download', () {
+    const platforms = ['linux-x64', 'macos-x64', 'macos-arm64', 'windows-x64'];
+
+    setUp(() async {
+      await cli(['org', 'create', 'acme']);
+      final project = await cliJson([
+        'project',
+        'create',
+        'agent',
+        '--org',
+        'acme',
+      ]);
+      await cli([
+        'package',
+        'create',
+        'omnyagent',
+        '--project',
+        project['id'] as String,
+      ]);
+
+      final assets = <String>[];
+      for (final platform in platforms) {
+        final file = File(p.join(dataDir.path, 'omnyagent-$platform.tar.gz'))
+          ..writeAsStringSync('build for $platform');
+        assets.addAll(['--asset', '${file.path}:$platform']);
+      }
+      await cli([
+        'release',
+        'publish',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+        ...assets,
+      ]);
+    });
+
+    test('defaults to this machine, without being told', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli(['download', '--package', 'omnyagent', '-o', out.path]),
+        0,
+      );
+
+      // Downloading an artifact almost always means "the one I can run".
+      final downloaded = out.listSync().whereType<File>().single;
+      expect(p.basename(downloaded.path), contains(Platforms.current));
+      expect(downloaded.readAsStringSync(), 'build for ${Platforms.current}');
+    });
+
+    test('honours an explicit platform', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'windows-x64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(
+        out.listSync().whereType<File>().single.readAsStringSync(),
+        'build for windows-x64',
+      );
+    });
+
+    test('accepts a platform spelled another way', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      // `darwin-x86_64` is what several other toolchains call macos-x64.
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'darwin-x86_64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(
+        out.listSync().whereType<File>().single.readAsStringSync(),
+        'build for macos-x64',
+      );
+    });
+
+    test(
+      'reports an architecture with no build, listing what exists',
+      () async {
+        final code = await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'linux-arm64',
+          '-o',
+          dataDir.path,
+        ]);
+
+        expect(code, 1);
+        expect(err.toString(), contains('no artifact for linux-arm64'));
+        // Telling the user what *is* available saves a second round-trip.
+        expect(err.toString(), contains('macos-arm64'));
+      },
+    );
+
+    test('verifies the checksum as it copies', () async {
+      final destination = Directory(p.join(dataDir.path, 'out'))..createSync();
+      out.clear();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '-o',
+          destination.path,
+        ]),
+        0,
+      );
+
+      // The bytes are checked against the digest on the asset record before
+      // the command reports success.
+      expect(out.toString(), contains('sha256 verified'));
+    });
+
+    test('--platform any falls back to choosing by name', () async {
+      final code = await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'any',
+        '-o',
+        dataDir.path,
+      ]);
+
+      // Four artifacts and no way to choose: a usage error listing them, not a
+      // silent guess.
+      expect(code, 64);
+      expect(err.toString(), contains('4 artifacts'));
+    });
+
+    test('takes a list of platforms in one invocation', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'linux-x64',
+          '--platform',
+          'macos-arm64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(
+        out.listSync().whereType<File>().map((f) => p.basename(f.path)).toSet(),
+        {'omnyagent-linux-x64.tar.gz', 'omnyagent-macos-arm64.tar.gz'},
+      );
+    });
+
+    test('takes a comma-separated list too', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'linux-x64,windows-x64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(out.listSync().whereType<File>(), hasLength(2));
+    });
+
+    test('--platform all takes every artifact in the release', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'all',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(
+        out.listSync().whereType<File>().map((f) => p.basename(f.path)).toSet(),
+        {for (final platform in platforms) 'omnyagent-$platform.tar.gz'},
+      );
+    });
+
+    test(
+      'creates the output directory for a multi-artifact download',
+      () async {
+        // `--platform all -o dist/` is how a release bundle is spelled, and
+        // requiring `mkdir dist` first would be friction with no purpose.
+        final out = Directory(p.join(dataDir.path, 'dist', 'nested'));
+        expect(out.existsSync(), isFalse);
+
+        expect(
+          await cli([
+            'download',
+            '--package',
+            'omnyagent',
+            '--platform',
+            'all',
+            '-o',
+            out.path,
+          ]),
+          0,
+        );
+
+        expect(out.listSync().whereType<File>(), hasLength(platforms.length));
+      },
+    );
+
+    test('verifies every artifact of a multi-platform download', () async {
+      final destination = Directory(p.join(dataDir.path, 'out'))..createSync();
+      out.clear();
+
+      await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'all',
+        '-o',
+        destination.path,
+      ]);
+
+      // One verification line per artifact: a bundle where only the first was
+      // checked would be a silent hole.
+      expect(
+        'sha256 verified'.allMatches(out.toString()),
+        hasLength(platforms.length),
+      );
+    });
+
+    test('deduplicates aliases that name the same artifact', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-x64,darwin-x86_64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(out.listSync().whereType<File>(), hasLength(1));
+    });
+
+    test('rejects "all" combined with a specific platform', () async {
+      final code = await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'all,linux-x64',
+        '-o',
+        dataDir.path,
+      ]);
+
+      expect(code, 64);
+      expect(err.toString(), contains('selects on its own'));
+    });
+
+    test('fails the whole download if one platform has no build', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      final code = await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'linux-x64,linux-arm64',
+        '-o',
+        out.path,
+      ]);
+
+      // Resolution happens before any byte is fetched, so a typo in the second
+      // platform does not leave half a bundle on disk.
+      expect(code, 1);
+      expect(err.toString(), contains('no artifact for linux-arm64'));
+      expect(out.listSync(), isEmpty);
+    });
+  });
+
+  group('download by kind', () {
+    setUp(() async {
+      await cli(['org', 'create', 'acme']);
+      final project = await cliJson([
+        'project',
+        'create',
+        'agent',
+        '--org',
+        'acme',
+      ]);
+      await cli([
+        'package',
+        'create',
+        'omnyagent',
+        '--project',
+        project['id'] as String,
+      ]);
+
+      // One platform carrying an installer, an archive, and the checksum file
+      // that accompanies them.
+      File(
+        p.join(dataDir.path, 'omnyagent.dmg'),
+      ).writeAsStringSync('installer');
+      File(
+        p.join(dataDir.path, 'omnyagent.tar.gz'),
+      ).writeAsStringSync('archive');
+      File(
+        p.join(dataDir.path, 'omnyagent.tar.gz.sha256'),
+      ).writeAsStringSync('digest');
+
+      await cli([
+        'release',
+        'publish',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.dmg')}:macos-arm64:installer',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.tar.gz')}:macos-arm64:archive',
+        '--asset',
+        '${p.join(dataDir.path, 'omnyagent.tar.gz.sha256')}:macos-arm64',
+      ]);
+    });
+
+    /// The filenames in [directory], for comparing a selection.
+    Set<String> filesIn(Directory directory) => directory
+        .listSync()
+        .whereType<File>()
+        .map((f) => p.basename(f.path))
+        .toSet();
+
+    test('publishes the kind given in the asset spec', () async {
+      final assets = await cliJson([
+        'asset',
+        'list',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+      ]);
+
+      expect(
+        {for (final a in assets) a['name']: a['kind']},
+        {
+          'omnyagent.dmg': 'installer',
+          'omnyagent.tar.gz': 'archive',
+          // Untagged, and inferred as auxiliary from its suffix.
+          'omnyagent.tar.gz.sha256': null,
+        },
+      );
+    });
+
+    test('--kind installer takes only the installer', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'installer',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.dmg'});
+    });
+
+    test('--kind archive takes only the archive', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'archive',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.tar.gz'});
+    });
+
+    test('prefers the installer when no kind is given', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      // The same order the update service uses, so `download` and
+      // `check-update` cannot disagree about which artifact *is* the release.
+      expect(filesIn(out), {'omnyagent.dmg'});
+    });
+
+    test('never picks a checksum file as the build itself', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--platform',
+        'macos-arm64',
+        '-o',
+        out.path,
+      ]);
+
+      expect(filesIn(out), isNot(contains('omnyagent.tar.gz.sha256')));
+    });
+
+    test('--kind checksums fetches the accompanying file on request', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      // Untagged on publish; recognised by its suffix.
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'macos-arm64',
+          '--kind',
+          'checksums',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.tar.gz.sha256'});
+    });
+
+    test('takes a list of kinds', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'all',
+          '--kind',
+          'installer,archive',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      expect(filesIn(out), {'omnyagent.dmg', 'omnyagent.tar.gz'});
+    });
+
+    test('--platform all keeps the checksum files in the bundle', () async {
+      final out = Directory(p.join(dataDir.path, 'out'))..createSync();
+
+      expect(
+        await cli([
+          'download',
+          '--package',
+          'omnyagent',
+          '--platform',
+          'all',
+          '-o',
+          out.path,
+        ]),
+        0,
+      );
+
+      // A mirror wants the digests too; "all" means all.
+      expect(filesIn(out), {
+        'omnyagent.dmg',
+        'omnyagent.tar.gz',
+        'omnyagent.tar.gz.sha256',
+      });
+    });
+
+    test('reports a kind with no artifact, listing what is present', () async {
+      final code = await cli([
+        'download',
+        '--package',
+        'omnyagent',
+        '--kind',
+        'sbom',
+        '-o',
+        dataDir.path,
+      ]);
+
+      expect(code, 1);
+      expect(err.toString(), contains('no artifact of kind sbom'));
+      expect(err.toString(), contains('installer'));
+    });
+  });
+
+  group('check-update defaults to this machine', () {
+    test('offers only a build this platform can install', () async {
+      await cli(['org', 'create', 'acme']);
+      final project = await cliJson([
+        'project',
+        'create',
+        'agent',
+        '--org',
+        'acme',
+      ]);
+      await cli([
+        'package',
+        'create',
+        'omnyagent',
+        '--project',
+        project['id'] as String,
+      ]);
+
+      // A release built for one architecture only — and not this one.
+      final other = Platforms.current == 'linux-x64'
+          ? 'windows-x64'
+          : 'linux-x64';
+      final file = File(p.join(dataDir.path, 'omnyagent-$other.tar.gz'))
+        ..writeAsStringSync('build for $other');
+      await cli([
+        'release',
+        'publish',
+        '--package',
+        'omnyagent',
+        '--version',
+        '1.0.0',
+        '--asset',
+        '${file.path}:$other',
+      ]);
+
+      out.clear();
+      expect(
+        await cli([
+          'check-update',
+          '--package',
+          'omnyagent',
+          '--current',
+          '0.9.0',
+        ]),
+        10,
+      );
+      // The update exists, but not one this machine can install.
+      expect(out.toString(), contains('nothing to install'));
+    });
+  });
+
   group('persistence', () {
     test('a registry survives a restart', () async {
       await cli(['org', 'create', 'acme']);

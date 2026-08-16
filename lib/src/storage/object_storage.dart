@@ -248,6 +248,14 @@ abstract interface class ObjectStorage {
   Future<ObjectReader> get(String key, {ByteRange? range});
 
   /// Metadata for [key], or `null` if it does not exist.
+  ///
+  /// [StoredObject.sha256] is populated whenever the backend recorded a digest
+  /// at upload, and when it is populated it must be correct. It can be `null`:
+  /// an object written by some other tool never had one, and `S3ObjectStorage`
+  /// cannot record one for a *streamed* upload whose digest the caller did not
+  /// declare, because S3 headers are sent before the body. Callers that need a
+  /// guaranteed digest should use the one [put] returns, which is always
+  /// computed — that is the value the registry stores on the asset record.
   Future<StoredObject?> head(String key);
 
   /// Whether [key] exists.

@@ -42,6 +42,16 @@ abstract class StoreCommand extends Command<int> {
   /// Reads a flag.
   bool flag(String name) => argResults?.flag(name) ?? false;
 
+  /// Reads a repeatable option, with blanks dropped.
+  ///
+  /// A blank arrives from `--platform ''` or from a trailing comma in
+  /// `--platform linux-x64,`, neither of which should become a selector that
+  /// matches nothing.
+  List<String> multi(String name) => [
+    for (final value in argResults?.multiOption(name) ?? const <String>[])
+      if (value.trim().isNotEmpty) value.trim(),
+  ];
+
   /// Parses repeated `--metadata key=value` options into a map.
   Map<String, String> metadata([String name = 'metadata']) {
     final entries = argResults?.multiOption(name) ?? const <String>[];
