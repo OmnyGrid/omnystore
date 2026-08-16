@@ -46,6 +46,9 @@
   typed exceptions from the error envelope.
 - `UpdateChecker` with change-only polling; `DownloadManager` with resume,
   retry and mandatory checksum verification.
+- `Platforms.current` reports this process's `os-arch` token, and the CLI's
+  `download` and `check-update` default to it — so an artifact is fetched for
+  the machine asking, and never for another architecture.
 - `omnystore` CLI: server, node, org, project, package, release, asset,
   download, check-update and providers, against a remote server or a local
   directory, with `--json` output and meaningful exit codes.

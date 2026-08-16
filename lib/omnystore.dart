@@ -49,6 +49,7 @@ export 'src/utils/http_dates.dart';
 export 'src/utils/ids.dart';
 export 'src/utils/json.dart';
 export 'src/utils/names.dart';
+export 'src/utils/platforms.dart';
 export 'src/utils/version_codec.dart';
 
 // Channels and versions.

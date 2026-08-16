@@ -7,8 +7,11 @@ import '../../channels/release_channel.dart';
 import '../../client/omnystore_client.dart';
 import '../../downloads/download_manager.dart';
 import '../../exceptions/omnystore_exception.dart';
+import '../../models/asset.dart';
 import '../../repositories/release_query.dart';
 import '../../services/asset_download.dart';
+import '../../utils/checksum.dart';
+import '../../utils/platforms.dart';
 import '../../utils/version_codec.dart';
 import '../cli_context.dart';
 import 'resource_commands.dart';
@@ -620,7 +623,12 @@ class DownloadCommand extends StoreCommand {
         help: 'Channel to take the latest from.',
         allowed: ['dev', 'beta', 'release'],
       )
-      ..addOption('platform', help: 'Platform to pick an artifact for.')
+      ..addOption(
+        'platform',
+        help:
+            'Platform to pick an artifact for. Defaults to this machine '
+            '(${Platforms.current}); pass "any" to choose from every artifact.',
+      )
       ..addOption('asset', abbr: 'a', help: 'Asset id or name to fetch.')
       ..addOption(
         'output',
@@ -638,6 +646,13 @@ class DownloadCommand extends StoreCommand {
     final destination = await Directory(optional('output') ?? '.').exists()
         ? p.join(optional('output') ?? '.', asset.name)
         : (optional('output') ?? asset.name);
+
+    // A local registry has no URL to fetch from, but the bytes are right
+    // there: copy them out and verify, rather than turning a reasonable
+    // command into a dead end.
+    if (ctx.store is! OmnyStoreClient) {
+      return _copyOut(ctx, asset, destination);
+    }
 
     final target = await ctx.store.downloadTarget(asset.id);
     final manager = DownloadManager();
@@ -677,6 +692,46 @@ class DownloadCommand extends StoreCommand {
     }
   }
 
+  /// Streams an artifact out of an embedded registry to [destination],
+  /// verifying it against the digest on its record.
+  ///
+  /// The equivalent of the HTTP path for a `--data` registry, which has no URL
+  /// to fetch from because the bytes never left this machine.
+  Future<int> _copyOut(CliContext ctx, Asset asset, String destination) async {
+    final file = File(destination);
+    await file.parent.create(recursive: true);
+
+    final download = await ctx.store.openAsset(asset.id);
+    final digest = Sha256Accumulator();
+    final sink = file.openWrite();
+    try {
+      await for (final chunk in download.stream) {
+        digest.add(chunk);
+        sink.add(chunk);
+      }
+      await sink.flush();
+    } finally {
+      await sink.close();
+    }
+
+    final checksum = digest.finish();
+    if (asset.sha256.isNotEmpty &&
+        !Checksums.matches(asset.sha256, checksum.sha256)) {
+      // Same guarantee as a network download: unverified bytes are deleted,
+      // never left on disk for something else to pick up.
+      await file.delete();
+      throw ChecksumMismatchException(
+        expected: asset.sha256.toLowerCase(),
+        actual: checksum.sha256,
+      );
+    }
+
+    ctx.info(
+      'Copied ${file.path} (${checksum.sizeBytes} bytes, sha256 verified).',
+    );
+    return 0;
+  }
+
   Future<dynamic> _resolveAsset(CliContext ctx) async {
     final assetRef = optional('asset');
     if (assetRef != null) {
@@ -713,16 +768,30 @@ class DownloadCommand extends StoreCommand {
         : assets.where((a) => a.name == assetRef).firstOrNull;
     if (byName != null) return byName;
 
-    final platform = optional('platform');
-    if (platform != null) {
-      final match = assets.where((a) => a.platform == platform).firstOrNull;
-      if (match == null) {
-        throw AssetNotFoundException(
-          '${release.version} has no artifact for $platform '
-          '(available: ${assets.map((a) => a.platform ?? 'any').join(', ')})',
-        );
-      }
-      return match;
+    // Defaults to this machine. Downloading an artifact almost always means
+    // "the one I can run", and making the common case explicit every time
+    // invites the mistake of fetching a build for the wrong architecture.
+    final requested = optional('platform') ?? Platforms.current;
+    if (requested != 'any') {
+      final match = assets
+          .where(
+            (a) =>
+                a.platform != null && Platforms.matches(a.platform!, requested),
+          )
+          .firstOrNull;
+      if (match != null) return match;
+
+      // A portable artifact is the documented fallback when no
+      // architecture-specific build matches — the same order the update
+      // service uses.
+      final portable = assets.where((a) => a.platform == null).toList();
+      if (portable.length == 1) return portable.single;
+
+      throw AssetNotFoundException(
+        '${release.version} has no artifact for $requested '
+        '(available: ${assets.map((a) => a.platform ?? 'any').join(', ')}). '
+        'Pass --platform to choose another, or --platform any to pick by name.',
+      );
     }
 
     if (assets.length > 1) {
@@ -779,7 +848,12 @@ class CheckUpdateCommand extends StoreCommand {
         help: 'Channel to check. Defaults to the package\'s own default.',
         allowed: ['dev', 'beta', 'release'],
       )
-      ..addOption('platform', help: 'Platform to match an artifact for.');
+      ..addOption(
+        'platform',
+        help:
+            'Platform to match an artifact for. Defaults to this machine '
+            '(${Platforms.current}); pass "any" to ignore platform.',
+      );
   }
 
   @override
@@ -791,7 +865,13 @@ class CheckUpdateCommand extends StoreCommand {
       packageReference: require('package'),
       currentVersion: Versions.parse(require('current')),
       channel: channel == null ? null : ReleaseChannel.parse(channel),
-      platform: optional('platform'),
+      // Defaults to this machine, so "is there an update" means "one I can
+      // actually install" without the caller having to say so.
+      platform: switch (optional('platform')) {
+        'any' => null,
+        final explicit? => explicit,
+        null => Platforms.current,
+      },
     );
 
     if (ctx.jsonOutput) {

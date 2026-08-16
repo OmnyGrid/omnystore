@@ -234,17 +234,30 @@ of publishing bad bytes.
 ## `omnystore download`
 
 ```sh
+omnystore download --package omnyagent -o /opt              # this machine
 omnystore download --package omnyagent --platform linux-x64 -o /opt
 omnystore download --package omnyagent --version 1.2.0 --asset agent.tar.gz
-omnystore download --package omnyagent --channel beta --platform macos-arm64
+omnystore download --package omnyagent --channel beta
 ```
+
+**`--platform` defaults to the machine you are on** — `macos-arm64` on Apple
+Silicon, `macos-x64` on Intel, and so on. Downloading an artifact almost always
+means "the one I can run", and requiring the flag every time invites fetching a
+build for the wrong architecture.
+
+Aliases other toolchains use are understood, so `--platform darwin-x86_64` and
+`--platform macos-x64` select the same artifact.
+
+Pass `--platform any` to ignore platform and choose by name instead; with
+several artifacts and no way to choose, the command lists them and exits `64`
+rather than guessing.
 
 Resolves the release, picks the artifact, streams it with a progress bar,
 resumes an interrupted transfer, and verifies the checksum. An
 already-downloaded, verified file transfers nothing.
 
-When a release has several artifacts and none is selected, the command lists
-them and exits `64` rather than guessing.
+Against a `--data` registry the bytes are already on this machine, so the
+artifact is copied out and verified rather than fetched over HTTP.
 
 ## `omnystore check-update`
 
@@ -256,6 +269,11 @@ omnystore check-update --package omnyagent --current 1.0.0 --channel beta \
 
 Exits `0` when current, `10` when an update exists. `--json` gives the full
 answer including the release and the matching artifact.
+
+`--platform` also defaults to this machine, so "is there an update" means "one I
+can actually install". A release that shipped without a build for this
+architecture reports the update *and* says there is nothing to install — pass
+`--platform any` to ignore platform entirely.
 
 ## `omnystore providers`
 
