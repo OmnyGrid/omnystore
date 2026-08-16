@@ -1,0 +1,108 @@
+name: Dart CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Dart version
+        run: |
+          dart --version
+          uname -a
+      - name: Install dependencies
+        run: dart pub get
+      - name: dart format
+        run: dart format -o none --set-exit-if-changed .
+      - name: dart analyze
+        run: dart analyze --fatal-infos --fatal-warnings .
+      - name: Generated sources are up to date
+        # A stale *.g.dart would compile but serialise the wrong shape, so the
+        # check is that regenerating changes nothing.
+        run: |
+          dart run build_runner build
+          git diff --exit-code -- '*.g.dart'
+      - name: dependency_validator
+        run: dart run dependency_validator
+      - name: dart doc
+        run: dart doc --dry-run
+      - name: dart pub publish --dry-run
+        run: dart pub publish --dry-run
+
+  test_vm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Dart version
+        run: |
+          dart --version
+          uname -a
+      - name: Install dependencies
+        run: dart pub get
+      - name: Run tests (VM)
+        run: dart test --platform vm --coverage=./coverage
+      - name: Generate coverage report
+        run: |
+          dart pub global activate coverage
+          dart pub global run coverage:format_coverage --packages=.dart_tool/package_config.json --report-on=lib --lcov -o ./coverage/lcov.info -i ./coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          directory: ./coverage/
+          flags: unittests
+          env_vars: OS,DART
+          fail_ci_if_error: false
+          verbose: true
+
+  web_compatible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Install dependencies
+        run: dart pub get
+      - name: Client SDK compiles to JavaScript
+        # The client barrel promises to be web-safe. Compiling it is the only
+        # way to keep that true — a stray `dart:io` import would still analyze
+        # and test fine on the VM.
+        run: dart compile js -o /tmp/web_client.js example/building_on_it/web_client.dart
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+      - name: Install dependencies
+        run: dart pub get
+      - name: Run the examples that terminate
+        # The ones that bind a port and wait for Ctrl-C are excluded; the rest
+        # run to completion, so a broken example fails CI rather than a reader.
+        run: |
+          for example in \
+            getting_started/embedded_registry \
+            getting_started/channels_and_promotion \
+            shipping_software/update_checker \
+            shipping_software/download_manager \
+            shipping_software/drafts_and_yanking \
+            shipping_software/download_analytics \
+            shipping_software/ranged_downloads \
+            storage/custom_storage_backend \
+            storage/persistent_registry \
+            hub_and_nodes/hub_with_nodes \
+            hub_and_nodes/replication_and_placement \
+            operating/authentication \
+            operating/cli_workflow \
+            building_on_it/testing_a_release_workflow
+          do
+            echo "=== $example ==="
+            dart run "example/$example.dart"
+          done

@@ -1,0 +1,7 @@
+# Declares custom test tags.
+tags:
+  # The `version` tag marks the test asserting omnyStoreVersion matches
+  # pubspec.yaml (test/unit/shared/version_test.dart).
+  version:
+  # Marks tests that bind a real HTTP server on the loopback interface.
+  server:

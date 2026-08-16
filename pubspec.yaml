@@ -1,0 +1,39 @@
+name: omnystore
+description: >-
+  A complete release management and software distribution platform in pure
+  Dart. Organizations, projects, packages, releases, assets and channels behind
+  one SDK, with a REST API server, a web-compatible client, a download manager
+  with checksum verification, an update service and a full CLI.
+version: 1.0.0
+repository: https://github.com/OmnyGrid/omnystore
+
+environment:
+  sdk: ^3.10.9
+
+executables:
+  omnystore: omnystore
+  omnystore_server: omnystore_server
+
+dependencies:
+  args: ^2.7.0
+  asn1lib: ^1.6.5
+  crypto: ^3.0.6
+  http: ^1.6.0
+  json_annotation: ^4.12.0
+  meta: ^1.19.0
+  omnyhub: ^1.7.0
+  path: ^1.9.1
+  pointycastle: ^4.0.0
+  pub_semver: ^2.2.0
+
+dev_dependencies:
+  build_runner: ^2.4.15
+  dependency_validator: ^5.0.5
+  json_serializable: ^6.9.5
+  lints: ^6.1.0
+  test: ^1.31.1
+
+# No `false_secrets:` entry, deliberately. The Google Cloud Storage credential
+# tests need an RSA key, and they generate one per run (see
+# test/support/test_rsa_key.dart) rather than committing a throwaway — so the
+# secret scanner stays sharp instead of being allowlisted around.
