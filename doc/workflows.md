@@ -60,6 +60,35 @@ a corrupted transfer fails the build instead of publishing bad bytes.
 an update *for me*"; without it, a `macos-arm64` client can be offered a Linux
 binary or nothing at all.
 
+### One release, many architectures
+
+A release is a *version*; the builds hang off it as artifacts, each tagged with
+the `os-arch` platform it was compiled for. `macos-x64` (Intel) and
+`macos-arm64` (Apple Silicon) are two artifacts on the same `1.4.0`, not two
+releases:
+
+```text
+1.4.0
+├── omnyagent-linux-x64.tar.gz       platform: linux-x64
+├── omnyagent-linux-arm64.tar.gz     platform: linux-arm64
+├── omnyagent-macos-x64.tar.gz       platform: macos-x64      ← Intel
+├── omnyagent-macos-arm64.tar.gz     platform: macos-arm64    ← Apple Silicon
+└── omnyagent-windows-x64.zip        platform: windows-x64
+```
+
+`Package.platforms` advertises which ones you build for, so a client can tell
+whether a build exists for it before downloading anything.
+
+The rule the update service enforces: **a client is never handed a build for
+another architecture.** An Intel binary offered to an Apple Silicon machine
+fails after the download, at launch, on the user's machine — worse than
+offering nothing. So the match is exact, and the only fallback is a genuinely
+platform-independent artifact (one published with no `platform` at all).
+
+When a build is missing for one architecture — a matrix runner failed, say —
+that platform's clients get `updateAvailable: true` with `asset: null`. That is
+the `isInstallable` distinction: the update exists, but not for them.
+
 Re-publishing an existing version is a `conflict` and exits `1`. That is
 correct: releases are immutable, so a rebuild gets a new version rather than
 overwriting one clients may already have downloaded.

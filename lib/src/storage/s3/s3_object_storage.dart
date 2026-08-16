@@ -83,6 +83,13 @@ class S3ObjectStorage implements ObjectStorage {
   /// The maximum size of a single-part `PUT`, which is what [put] uses.
   static const int maxSinglePartBytes = 5 * 1024 * 1024 * 1024;
 
+  /// The user-metadata key the SHA-256 is recorded under.
+  ///
+  /// S3's own `etag` is an MD5 for single-part uploads and something else
+  /// entirely for multipart ones, so it is never a SHA-256 — the digest has to
+  /// travel in user metadata to survive at all.
+  static const String _sha256Metadata = 'sha256';
+
   /// Creates an S3-backed store.
   ///
   /// Pass [httpClient] to share a connection pool with the rest of the process;
@@ -142,13 +149,17 @@ class S3ObjectStorage implements ObjectStorage {
       request = streamed;
       // Populated by the time the response arrives, because the request cannot
       // complete before the body stream closes.
-      checksum = await _sendAndDescribe(
-        request,
-        key,
-        contentType,
-        metadata,
-        () => observed,
-      );
+      checksum = await _sendAndDescribe(request, key, contentType, {
+        ...metadata,
+        // Only recordable when the caller already knows it: headers go out
+        // before the first byte of a streamed body, so the digest computed
+        // *during* the upload cannot be attached to the same request. S3 has
+        // no metadata-only update — changing it means a server-side COPY of
+        // the whole object — so paying that on every upload to populate an
+        // informational field would be a bad trade. See `head`.
+        if (expectedSha256 != null)
+          _sha256Metadata: expectedSha256.toLowerCase(),
+      }, () => observed);
       if (checksum.sizeBytes != length) {
         // The object is already in the bucket at this point; remove it rather
         // than leave a truncated artifact that would fail every download.
@@ -174,7 +185,9 @@ class S3ObjectStorage implements ObjectStorage {
         request,
         key,
         contentType,
-        metadata,
+        // The body was buffered, so the digest is known before the request is
+        // sent and can be recorded for `head` to read back.
+        {...metadata, _sha256Metadata: computed.sha256},
         () => computed,
       );
     }

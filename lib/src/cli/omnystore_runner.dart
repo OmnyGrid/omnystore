@@ -81,8 +81,20 @@ class OmnyStoreCliRunner extends CommandRunner<int> {
     // which do not exist until the top-level arguments are parsed. They get a
     // holder that is filled in by [runCommand] before either can run, so every
     // command is registered up front and `--help` lists them all.
-    addCommand(ServerCommand(globals: _globals, environment: this.environment));
-    addCommand(NodeCommand(globals: _globals, environment: this.environment));
+    addCommand(
+      ServerCommand(
+        globals: _globals,
+        environment: this.environment,
+        out: this.out,
+      ),
+    );
+    addCommand(
+      NodeCommand(
+        globals: _globals,
+        environment: this.environment,
+        out: this.out,
+      ),
+    );
   }
 
   final _LateGlobals _globals = _LateGlobals();

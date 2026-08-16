@@ -5,6 +5,7 @@ import 'package:omnystore/omnystore.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/fake_object_stores.dart';
 import '../../support/harness.dart';
 
 void main() {
@@ -260,12 +261,30 @@ void main() {
         expect(await storage.exists('nope.txt'), isFalse);
       });
 
-      test('head reports size and checksum', () async {
+      test('head reports the size, and a digest if it recorded one', () async {
         await storage.put('x.txt', bytesOf('hello'));
 
         final head = await storage.head('x.txt');
         expect(head!.sizeBytes, 5);
-        expect(head.sha256, Checksums.sha256OfString('hello'));
+        // A backend may not have a digest to report — an object written by
+        // another tool never had one — but if it reports one it must be right.
+        if (head.sha256 != null) {
+          expect(head.sha256, Checksums.sha256OfString('hello'));
+        }
+      });
+
+      test('records the digest it was given for a streamed upload', () async {
+        // The caller declared it, so every backend can attach it up front.
+        const payload = 'hello';
+        await storage.put(
+          'declared.txt',
+          bytesOf(payload),
+          length: payload.length,
+          expectedSha256: Checksums.sha256OfString(payload),
+        );
+
+        final head = await storage.head('declared.txt');
+        expect(head!.sha256, Checksums.sha256OfString(payload));
       });
 
       test('replaces an existing object', () async {
@@ -349,6 +368,60 @@ void main() {
       final root = (storage as LocalObjectStorage).root;
       if (root.existsSync()) await root.delete(recursive: true);
     },
+  );
+
+  // The cloud backends run the same contract against a fake endpoint that
+  // speaks their real wire protocol — signed requests, XML/JSON responses,
+  // ranges, pagination. A stub returning canned bytes would prove only that
+  // the methods exist; this proves the URLs, headers and parsers are right.
+  objectStorageContract(
+    'S3ObjectStorage',
+    () async => S3ObjectStorage(
+      bucket: 'test-bucket',
+      region: 'eu-west-1',
+      credentials: StaticAwsCredentialsProvider.of(
+        accessKeyId: 'AKIAEXAMPLE',
+        secretAccessKey: 'secret',
+      ),
+      httpClient: FakeS3().client,
+    ),
+  );
+
+  objectStorageContract(
+    'S3ObjectStorage (path-style, with prefix)',
+    () async => S3ObjectStorage(
+      bucket: 'test-bucket',
+      region: 'us-east-1',
+      prefix: 'registry',
+      endpoint: Uri.parse('https://minio.internal:9000'),
+      usePathStyle: true,
+      credentials: StaticAwsCredentialsProvider.of(
+        accessKeyId: 'AKIAEXAMPLE',
+        secretAccessKey: 'secret',
+      ),
+      httpClient: FakeS3(usePathStyle: true).client,
+    ),
+  );
+
+  objectStorageContract(
+    'GcsObjectStorage',
+    () async => GcsObjectStorage(
+      bucket: 'test-bucket',
+      credentials: GcpStaticCredentials.of('ya29.test'),
+      apiBase: Uri.parse('https://storage.googleapis.test/'),
+      httpClient: FakeGcs().client,
+    ),
+  );
+
+  objectStorageContract(
+    'GcsObjectStorage (with prefix)',
+    () async => GcsObjectStorage(
+      bucket: 'test-bucket',
+      prefix: 'registry',
+      credentials: GcpStaticCredentials.of('ya29.test'),
+      apiBase: Uri.parse('https://storage.googleapis.test/'),
+      httpClient: FakeGcs().client,
+    ),
   );
 
   group('MemoryObjectStorage specifics', () {
