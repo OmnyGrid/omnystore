@@ -4,7 +4,7 @@ description: >-
   Dart. Organizations, projects, packages, releases, assets and channels behind
   one SDK, with a REST API server, a web-compatible client, a download manager
   with checksum verification, an update service and a full CLI.
-version: 1.0.0
+version: 1.0.1
 repository: https://github.com/OmnyGrid/omnystore
 
 environment:
@@ -21,7 +21,7 @@ dependencies:
   http: ^1.6.0
   json_annotation: ^4.12.0
   meta: ^1.19.0
-  omnyhub: ^1.7.0
+  omnyhub: ^1.9.2
   path: ^1.9.1
   pointycastle: ^4.0.0
   pub_semver: ^2.2.0
